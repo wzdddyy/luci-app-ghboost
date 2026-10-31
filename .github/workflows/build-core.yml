@@ -13,12 +13,22 @@ permissions:
 
 jobs:
   build-bin:
-    name: ghboost binary (${{ matrix.goarch }})
+    name: ghboost binary (${{ matrix.tag }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        goarch: [arm64, amd64]
+        include:
+          - tag: arm64
+            goarch: arm64
+          - tag: amd64
+            goarch: amd64
+          - tag: armv7
+            goarch: arm
+            goarm: "7"
+          - tag: armv6
+            goarch: arm
+            goarm: "6"
     steps:
       - uses: actions/checkout@v5
         with: { path: src }
@@ -38,15 +48,17 @@ jobs:
           set -euo pipefail
           VER=$(grep -m1 '^PKG_VERSION:=' ../Makefile | cut -d= -f2 | tr -d ' ')
           echo "version=$VER"
+          [ -z "${{ matrix.goarm }}" ] || export GOARM="${{ matrix.goarm }}"
+          echo "GOOS=$GOOS GOARCH=$GOARCH GOARM=${GOARM:-默认}"
           go build -trimpath -buildvcs=false \
             -ldflags="-s -w -extldflags=-static -X main.version=$VER -X main.statusVersion=$VER" \
-            -o "../ghboost-linux-${{ matrix.goarch }}" .
-          file "../ghboost-linux-${{ matrix.goarch }}"
+            -o "../ghboost-linux-${{ matrix.tag }}" .
+          file "../ghboost-linux-${{ matrix.tag }}"
 
       - uses: actions/upload-artifact@v6
         with:
-          name: bin-${{ matrix.goarch }}
-          path: src/ghboost-linux-${{ matrix.goarch }}
+          name: bin-${{ matrix.tag }}
+          path: src/ghboost-linux-${{ matrix.tag }}
           if-no-files-found: error
 
   build-pkg:
@@ -102,6 +114,116 @@ jobs:
             pkgarch: x86_64
             ext: ipk
 
+          - label: apk-aarch64_cortex-a72
+            openwrt: "25.12.5"
+            sdkpath: bcm27xx/bcm2711
+            sdkfile: bcm27xx-bcm2711
+            gcc: "14.3.0"
+            target: bcm27xx
+            subtarget: bcm2711
+            goarch: arm64
+            pkgarch: aarch64_cortex-a72
+            ext: apk
+
+          - label: ipk-aarch64_cortex-a72
+            openwrt: "24.10.6"
+            sdkpath: bcm27xx/bcm2711
+            sdkfile: bcm27xx-bcm2711
+            gcc: "13.3.0"
+            target: bcm27xx
+            subtarget: bcm2711
+            goarch: arm64
+            pkgarch: aarch64_cortex-a72
+            ext: ipk
+
+          - label: apk-aarch64_generic
+            openwrt: "25.12.5"
+            sdkpath: armsr/armv8
+            sdkfile: armsr-armv8
+            gcc: "14.3.0"
+            target: armsr
+            subtarget: armv8
+            goarch: arm64
+            pkgarch: aarch64_generic
+            ext: apk
+
+          - label: ipk-aarch64_generic
+            openwrt: "24.10.6"
+            sdkpath: armsr/armv8
+            sdkfile: armsr-armv8
+            gcc: "13.3.0"
+            target: armsr
+            subtarget: armv8
+            goarch: arm64
+            pkgarch: aarch64_generic
+            ext: ipk
+
+          - label: apk-arm_cortex-a7_neon-vfpv4
+            openwrt: "25.12.5"
+            sdkpath: ipq40xx/generic
+            sdkfile: ipq40xx-generic
+            gcc: "14.3.0"
+            target: ipq40xx
+            subtarget: generic
+            goarch: arm
+            pkgarch: arm_cortex-a7_neon-vfpv4
+            ext: apk
+
+          - label: ipk-arm_cortex-a7_neon-vfpv4
+            openwrt: "24.10.6"
+            sdkpath: ipq40xx/generic
+            sdkfile: ipq40xx-generic
+            gcc: "13.3.0"
+            target: ipq40xx
+            subtarget: generic
+            goarch: arm
+            pkgarch: arm_cortex-a7_neon-vfpv4
+            ext: ipk
+
+          - label: apk-arm_cortex-a9
+            openwrt: "25.12.5"
+            sdkpath: bcm53xx/generic
+            sdkfile: bcm53xx-generic
+            gcc: "14.3.0"
+            target: bcm53xx
+            subtarget: generic
+            goarch: arm
+            pkgarch: arm_cortex-a9
+            ext: apk
+
+          - label: ipk-arm_cortex-a9
+            openwrt: "24.10.6"
+            sdkpath: bcm53xx/generic
+            sdkfile: bcm53xx-generic
+            gcc: "13.3.0"
+            target: bcm53xx
+            subtarget: generic
+            goarch: arm
+            pkgarch: arm_cortex-a9
+            ext: ipk
+
+          - label: apk-arm_cortex-a9_neon
+            openwrt: "25.12.5"
+            sdkpath: imx/cortexa9
+            sdkfile: imx-cortexa9
+            gcc: "14.3.0"
+            target: imx
+            subtarget: cortexa9
+            goarch: arm
+            pkgarch: arm_cortex-a9_neon
+            ext: apk
+
+          - label: ipk-arm_cortex-a9_neon
+            openwrt: "24.10.6"
+            sdkpath: imx/cortexa9
+            sdkfile: imx-cortexa9
+            gcc: "13.3.0"
+            target: imx
+            subtarget: cortexa9
+            goarch: arm
+            pkgarch: arm_cortex-a9_neon
+            ext: ipk
+
     steps:
       - uses: actions/checkout@v5
         with: { path: src }
@@ -127,10 +249,24 @@ jobs:
             echo "runner 已自带全部构建依赖, 跳过 apt"
           fi
 
+      - name: Resolve Go binary tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          case "${{ matrix.pkgarch }}" in
+            arm_cortex-a9) bin=armv6 ;;
+            arm_cortex-a7_neon-vfpv4|arm_cortex-a9_neon) bin=armv7 ;;
+            x86_64) bin=amd64 ;;
+            aarch64*) bin=arm64 ;;
+            *) echo "ERROR: 未知架构 ${{ matrix.pkgarch }}" >&2; exit 1 ;;
+          esac
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          echo "选用 Go 二进制: $bin"
+
       - name: Fetch Go binary
         uses: actions/download-artifact@v7
         with:
-          name: bin-${{ matrix.goarch }}
+          name: bin-${{ steps.resolve.outputs.bin }}
           path: src/files/usr/bin
 
       - name: Cache SDK tarball
@@ -142,7 +278,11 @@ jobs:
       - name: Download SDK ${{ matrix.openwrt }} (${{ matrix.sdkpath }})
         run: |
           set -euo pipefail
-          sdk="openwrt-sdk-${{ matrix.openwrt }}-${{ matrix.sdkfile }}_gcc-${{ matrix.gcc }}_musl.Linux-x86_64.tar.zst"
+          abi=""
+          if [ "${{ matrix.goarch }}" = "arm" ]; then
+            abi="_eabi"
+          fi
+          sdk="openwrt-sdk-${{ matrix.openwrt }}-${{ matrix.sdkfile }}_gcc-${{ matrix.gcc }}_musl${abi}.Linux-x86_64.tar.zst"
           mkdir -p ~/sdk-cache sdk
           if [ -s ~/sdk-cache/"$sdk" ]; then
             echo "SDK 命中缓存, 跳过下载: $sdk"
@@ -156,7 +296,7 @@ jobs:
       - name: Stage package
         run: |
           set -euo pipefail
-          mv "src/files/usr/bin/ghboost-linux-${{ matrix.goarch }}" src/files/usr/bin/ghboost
+          mv "src/files/usr/bin/ghboost-linux-${{ steps.resolve.outputs.bin }}" src/files/usr/bin/ghboost
           chmod +x src/files/usr/bin/ghboost
           file src/files/usr/bin/ghboost
 
@@ -216,6 +356,14 @@ jobs:
           ARCH_TAG: ${{ matrix.pkgarch }}
         run: |
           set -euo pipefail
+          pkg=$(find sdk/bin/packages -type f -name "ghboost*.${EXT}" -print -quit)
+          [ -n "$pkg" ] || { echo "ERROR: 没找到 ghboost 的 .${EXT} 包" >&2; exit 1; }
+          actual=$(printf '%s\n' "$pkg" | sed -n 's#.*/bin/packages/\([^/]*\)/.*#\1#p')
+          echo "SDK 产物架构=$actual 期望=$ARCH_TAG ($pkg)"
+          [ "$actual" = "$ARCH_TAG" ] || {
+            echo "ERROR: 实际架构 ($actual) 与 pkgarch ($ARCH_TAG) 不一致, 检查 target/subtarget 选型" >&2
+            exit 1
+          }
           mkdir -p out
           n=0
           while IFS= read -r f; do
@@ -224,10 +372,6 @@ jobs:
           done < <(find sdk/bin/packages -type f -name "ghboost*.${EXT}")
           ls -lh out/
           test "$n" -eq 1 || { echo "ERROR: 期望 1 个核心包, 实际 $n 个" >&2; exit 1; }
-          case "out/ghboost_${ARCH_TAG}.${EXT}" in
-            *"${ARCH_TAG}"*) ;;
-            *) echo "ERROR: 产物架构标记不对" >&2; exit 1 ;;
-          esac
 
       - name: Upload build log
         if: always()
@@ -262,8 +406,8 @@ jobs:
           mkdir -p out
           find artifacts -type f -exec cp -v {} out/ \;
           ls -lh out/
-          test "$(ls -1 out | wc -l | tr -d ' ')" -eq 4 || {
-            echo "ERROR: 期望 4 个核心包 (2 架构 x 2 格式)" >&2
+          test "$(ls -1 out | wc -l | tr -d ' ')" -eq 14 || {
+            echo "ERROR: 期望 14 个核心包 (7 架构 x 2 格式)" >&2
             ls -1 out >&2; exit 1; }
 
       - name: Publish
@@ -282,15 +426,32 @@ jobs:
           - 提交: \`${GITHUB_SHA::7}\`
           - 构建: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M %Z')
 
+          **支持架构**（每种架构均提供 apk 与 ipk）
+
+          \`aarch64_cortex-a53\`、\`aarch64_cortex-a72\`、\`aarch64_generic\`、\`arm_cortex-a7_neon-vfpv4\`、\`arm_cortex-a9\`、\`arm_cortex-a9_neon\`、\`x86_64\`
+
           **在线安装**
 
-          wget -O /tmp/ghboost_aarch64_cortex-a53.apk https://github.com/wzdddyy/luci-app-ghboost/releases/download/core-latest/ghboost_aarch64_cortex-a53.apk
+          1. 先确认设备架构：
 
-          apk add --allow-untrusted /tmp/ghboost_aarch64_cortex-a53.apk
+          \`\`\`sh
+          . /etc/openwrt_release && echo \$DISTRIB_ARCH
+          \`\`\`
 
-          wget -O /tmp/ghboost_aarch64_cortex-a53.ipk https://github.com/wzdddyy/luci-app-ghboost/releases/download/core-latest/ghboost_aarch64_cortex-a53.ipk
-          
-          opkg install /tmp/ghboost_aarch64_cortex-a53.ipk
+          2. 把下面命令中的 \`<arch>\` 换成上一步的输出。
+
+          apk（iStoreOS / OpenWrt 25.x）：
+
+          \`\`\`sh
+          wget -O /tmp/ghboost.apk https://github.com/wzdddyy/luci-app-ghboost/releases/download/core-latest/ghboost_<arch>.apk
+          apk add --allow-untrusted /tmp/ghboost.apk
+          \`\`\`
+
+          ipk（OpenWrt 24.10）：
+
+          \`\`\`sh
+          wget -O /tmp/ghboost.ipk https://github.com/wzdddyy/luci-app-ghboost/releases/download/core-latest/ghboost_<arch>.ipk
+          opkg install /tmp/ghboost.ipk
           \`\`\`
           EOF
 

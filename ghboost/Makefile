@@ -28,3 +28,4 @@ clean:
 release:
 	@$(MAKE) build GOOS=linux GOARCH=arm64
 	@$(MAKE) build GOOS=linux GOARCH=amd64
+	@$(MAKE) build GOOS=linux GOARCH=arm GOARM=7

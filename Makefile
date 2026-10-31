@@ -14,6 +14,8 @@ ifeq ($(ARCH),aarch64)
   GH_BIN_MAGIC:=aarch64
 else ifeq ($(ARCH),x86_64)
   GH_BIN_MAGIC:=x86-64
+else ifeq ($(ARCH),arm)
+  GH_BIN_MAGIC:=32-bit LSB executable, ARM
 endif
 
 define Package/ghboost
@@ -38,7 +40,7 @@ endef
 
 define Package/ghboost/install
 	@test -f $(GH_BIN) || { \
-		echo "ERROR: $(GH_BIN) not found, run 'make -C ghboost stage GOARCH=arm64|amd64' first" >&2; \
+		echo "ERROR: $(GH_BIN) not found, run 'make -C ghboost stage GOARCH=arm64|amd64|arm' first" >&2; \
 		exit 1; }
 	@if command -v file >/dev/null 2>&1 && [ -n "$(GH_BIN_MAGIC)" ]; then \
 		file $(GH_BIN) | grep -qE '$(GH_BIN_MAGIC)' || { \
