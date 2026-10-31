@@ -37,3 +37,8 @@ Firefox 用独立证书库，需在「设置 → 隐私与安全 → 证书 → 
 **53 端口被其他插件占用** — 把重定向 53 端口的插件改为 dnsmasq 的上游服务器，否则 fake IP 应答不生效。
 
 
+## 界面预览
+
+<p align="center"><img src="preview.png" alt="黑猫加速主界面" width="860"></p>
+
+
