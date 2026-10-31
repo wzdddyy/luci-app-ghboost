@@ -1,0 +1,302 @@
+name: build-core
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '构建完成后更新 core-latest Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-bin:
+    name: ghboost binary (${{ matrix.goarch }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: src }
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+          cache-dependency-path: src/ghboost/go.mod
+
+      - name: Build
+        working-directory: src/ghboost
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          VER=$(grep -m1 '^PKG_VERSION:=' ../Makefile | cut -d= -f2 | tr -d ' ')
+          echo "version=$VER"
+          go build -trimpath -buildvcs=false \
+            -ldflags="-s -w -extldflags=-static -X main.version=$VER -X main.statusVersion=$VER" \
+            -o "../ghboost-linux-${{ matrix.goarch }}" .
+          file "../ghboost-linux-${{ matrix.goarch }}"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bin-${{ matrix.goarch }}
+          path: src/ghboost-linux-${{ matrix.goarch }}
+          if-no-files-found: error
+
+  build-pkg:
+    name: ${{ matrix.label }}
+    needs: build-bin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: apk-aarch64
+            openwrt: "25.12.5"
+            sdkpath: mediatek/filogic
+            sdkfile: mediatek-filogic
+            gcc: "14.3.0"
+            target: mediatek
+            subtarget: filogic
+            goarch: arm64
+            pkgarch: aarch64_cortex-a53
+            ext: apk
+
+          - label: ipk-aarch64
+            openwrt: "24.10.6"
+            sdkpath: mediatek/filogic
+            sdkfile: mediatek-filogic
+            gcc: "13.3.0"
+            target: mediatek
+            subtarget: filogic
+            goarch: arm64
+            pkgarch: aarch64_cortex-a53
+            ext: ipk
+
+          - label: apk-x86_64
+            openwrt: "25.12.5"
+            sdkpath: x86/64
+            sdkfile: x86-64
+            gcc: "14.3.0"
+            target: x86
+            subtarget: "64"
+            goarch: amd64
+            pkgarch: x86_64
+            ext: apk
+
+          - label: ipk-x86_64
+            openwrt: "24.10.6"
+            sdkpath: x86/64
+            sdkfile: x86-64
+            gcc: "13.3.0"
+            target: x86
+            subtarget: "64"
+            goarch: amd64
+            pkgarch: x86_64
+            ext: ipk
+
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: src }
+
+      - name: Install deps
+        run: |
+          set -euo pipefail
+          missing=""
+          for c in gcc g++ make bison flex gawk git python3 rsync unzip zstd file wget bc perl; do
+            command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+          done
+          command -v msgfmt >/dev/null 2>&1 || missing="$missing gettext"
+          for h in libelf-dev libncurses-dev libssl-dev zlib1g-dev; do
+            dpkg -s "$h" >/dev/null 2>&1 || missing="$missing $h"
+          done
+
+          if [ -n "$missing" ]; then
+            echo "runner 缺少:$missing -> 开始安装"
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends $missing
+            sudo apt-get clean
+          else
+            echo "runner 已自带全部构建依赖, 跳过 apt"
+          fi
+
+      - name: Fetch Go binary
+        uses: actions/download-artifact@v7
+        with:
+          name: bin-${{ matrix.goarch }}
+          path: src/files/usr/bin
+
+      - name: Cache SDK tarball
+        uses: actions/cache@v5
+        with:
+          path: ~/sdk-cache
+          key: sdk-${{ matrix.openwrt }}-${{ matrix.sdkfile }}-gcc${{ matrix.gcc }}
+
+      - name: Download SDK ${{ matrix.openwrt }} (${{ matrix.sdkpath }})
+        run: |
+          set -euo pipefail
+          sdk="openwrt-sdk-${{ matrix.openwrt }}-${{ matrix.sdkfile }}_gcc-${{ matrix.gcc }}_musl.Linux-x86_64.tar.zst"
+          mkdir -p ~/sdk-cache sdk
+          if [ -s ~/sdk-cache/"$sdk" ]; then
+            echo "SDK 命中缓存, 跳过下载: $sdk"
+          else
+            url="https://downloads.openwrt.org/releases/${{ matrix.openwrt }}/targets/${{ matrix.sdkpath }}/$sdk"
+            echo "GET $url"
+            wget -q -O ~/sdk-cache/"$sdk" "$url"
+          fi
+          tar -I zstd -xf ~/sdk-cache/"$sdk" -C sdk --strip-components=1
+
+      - name: Stage package
+        run: |
+          set -euo pipefail
+          mv "src/files/usr/bin/ghboost-linux-${{ matrix.goarch }}" src/files/usr/bin/ghboost
+          chmod +x src/files/usr/bin/ghboost
+          file src/files/usr/bin/ghboost
+
+          mkdir -p sdk/package/luci-app-ghboost
+          rsync -a \
+            --exclude '/.git/' --exclude '/.github/' --exclude '/ghboost/' \
+            src/ sdk/package/luci-app-ghboost/
+
+      - name: Build package
+        working-directory: sdk
+        env:
+          TARGET: ${{ matrix.target }}
+          SUBTARGET: ${{ matrix.subtarget }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          [ -f feeds.conf ] || cp feeds.conf.default feeds.conf
+          ./scripts/feeds update luci
+
+          {
+            echo "CONFIG_TARGET_${TARGET}=y"
+            echo "CONFIG_TARGET_${TARGET}_${SUBTARGET}=y"
+            echo "CONFIG_PACKAGE_ghboost=m"
+          } > .config
+          make defconfig 2>&1 | tee /tmp/defconfig.log
+
+          for k in "CONFIG_TARGET_${TARGET}=y" "CONFIG_TARGET_${TARGET}_${SUBTARGET}=y"; do
+            grep -qx "$k" .config || {
+              echo "ERROR: $k 没有生效, SDK 与 target 不匹配?" >&2
+              grep -E '^CONFIG_TARGET' .config | head -20 >&2
+              exit 1
+            }
+          done
+
+          grep -qx "CONFIG_PACKAGE_ghboost=m" .config || {
+            echo "ERROR: CONFIG_PACKAGE_ghboost 没有进 .config" >&2
+            grep -niE "ghboost|dependency" /tmp/defconfig.log | head -30 >&2 || true
+            exit 1
+          }
+
+          if ! make package/luci-app-ghboost/compile V=s -j"$(nproc)" 2>&1 | tee /tmp/build.log; then
+            echo "::error::make 失败, 下面是日志里的关键行"
+            grep -nE 'Error [0-9]|error:|fatal error|\*\*\* |No targets|No such file|ERROR:' /tmp/build.log | tail -80 || true
+            exit 1
+          fi
+
+          echo "--- 编出来的包 ---"
+          find bin/packages -type f | sort
+          find bin/packages -type f -name "ghboost*.${EXT}" -print -quit | grep -q . || {
+            echo "ERROR: 没有产出 ghboost 的 .${EXT} 包 (上面清单就是全部产物)" >&2
+            exit 1
+          }
+
+      - name: Collect
+        env:
+          EXT: ${{ matrix.ext }}
+          ARCH_TAG: ${{ matrix.pkgarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          n=0
+          while IFS= read -r f; do
+            cp -v "$f" "out/ghboost_${ARCH_TAG}.${EXT}"
+            n=$((n + 1))
+          done < <(find sdk/bin/packages -type f -name "ghboost*.${EXT}")
+          ls -lh out/
+          test "$n" -eq 1 || { echo "ERROR: 期望 1 个核心包, 实际 $n 个" >&2; exit 1; }
+          case "out/ghboost_${ARCH_TAG}.${EXT}" in
+            *"${ARCH_TAG}"*) ;;
+            *) echo "ERROR: 产物架构标记不对" >&2; exit 1 ;;
+          esac
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log-${{ matrix.label }}
+          path: /tmp/build.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pkg-${{ matrix.label }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: publish core-latest
+    needs: [build-bin, build-pkg]
+    if: github.event.inputs.publish != 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: pkg-*
+
+      - name: Flatten
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find artifacts -type f -exec cp -v {} out/ \;
+          ls -lh out/
+          test "$(ls -1 out | wc -l | tr -d ' ')" -eq 4 || {
+            echo "ERROR: 期望 4 个核心包 (2 架构 x 2 格式)" >&2
+            ls -1 out >&2; exit 1; }
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: core-latest
+        run: |
+          set -euo pipefail
+          ver=$(grep -m1 '^PKG_VERSION:=' Makefile | cut -d= -f2 | tr -d ' ')
+          rel=$(grep -m1 '^PKG_RELEASE:=' Makefile | cut -d= -f2 | tr -d ' ')
+
+          cat > notes.md <<EOF
+          **ghboost** 核心包，滚动发布：文件名固定，URL 永久有效。
+
+          - 版本: \`${ver}-r${rel}\`
+          - 提交: \`${GITHUB_SHA::7}\`
+          - 构建: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M %Z')
+
+          **在线安装**
+
+          wget -O /tmp/ghboost_aarch64_cortex-a53.apk https://github.com/wzdddyy/luci-app-ghboost/releases/download/core-latest/ghboost_aarch64_cortex-a53.apk
+
+          apk add --allow-untrusted /tmp/ghboost_aarch64_cortex-a53.apk
+
+          wget -O /tmp/ghboost_aarch64_cortex-a53.ipk https://github.com/wzdddyy/luci-app-ghboost/releases/download/core-latest/ghboost_aarch64_cortex-a53.ipk
+          
+          opkg install /tmp/ghboost_aarch64_cortex-a53.ipk
+          \`\`\`
+          EOF
+
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+                 --title "ghboost core (rolling)" --notes-file notes.md --latest=false
+          gh release upload "$TAG" out/* -R "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" \
+            --title "ghboost core ${ver}-r${rel}" --notes-file notes.md --latest=false

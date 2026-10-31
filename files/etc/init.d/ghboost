@@ -1,0 +1,798 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+PROG=/usr/bin/ghboost
+LISTEN_PORT=18443
+DNS_UPSTREAM_DEFAULT="https://dns.alidns.com/dns-query,https://doh.pub/dns-query"
+DNS_UPSTREAM=$DNS_UPSTREAM_DEFAULT
+DOMAINS=/usr/share/ghboost/domains.conf
+FAKE_CIDR=100.64.0.0/24
+
+CA_CERT=/etc/ghboost/ghboost-ca.crt
+CA_KEY=/etc/ghboost/ghboost-ca.key
+
+MAX_CONNS=128
+
+STATE=/tmp/ghboost.fw.state
+ENABLED=0
+STATS_FILE=/tmp/ghboost.status.json
+BEST_FILE=/tmp/ghboost.best.json
+LOG_FILE=/tmp/ghboost.log
+LOG_MAX=2097152
+CFG_STATE=/tmp/ghboost.cfg.state
+RUNTIME=/tmp/ghboost.runtime
+DNSCHECK_FILE=/tmp/ghboost.dnscheck
+
+ADDRS_CACHE=
+CFG_FP=
+
+CIDR_USER=0
+MAX_CONNS_USER=0
+
+DNSMASQ_STAMP_GLOB="/var/run/dnsmasq.*.dhcp"
+DNSMASQ_LOCK=/var/lock/ghboost.dnsmasq.lock
+
+gl() {
+	local f="${LOG_FILE:-/tmp/ghboost.log}"
+	local lv=INFO sz=0
+	case "$*" in
+	FAIL:*) lv=ERROR ;;
+	WARN:*) lv=WARN ;;
+	esac
+	logger -t ghboost "[$lv] $*"
+	[ -n "$f" ] || return 0
+	[ -f "$f" ] && sz=$(wc -c < "$f" 2>/dev/null | tr -d ' \r\n')
+	[ "${sz:-0}" -ge "$LOG_MAX" ] && return 0
+	printf '%s [%s] [init] %s\n' "$(date '+%Y/%m/%d %H:%M:%S')" "$lv" "$*" >> "$f" 2>/dev/null || true
+}
+
+ip_addrs() {
+	if [ -n "$ADDRS_CACHE" ]; then
+		printf '%s\n' "$ADDRS_CACHE"
+		return 0
+	fi
+	ip -4 addr show 2>/dev/null
+}
+
+refresh_ip_addrs() {
+	ADDRS_CACHE="$(ip -4 addr show 2>/dev/null)"
+}
+
+ghboost_pids() {
+	local f
+	for f in $(grep -l "^$PROG" /proc/[0-9]*/cmdline 2>/dev/null); do
+		f="${f#/proc/}"
+		echo "${f%/cmdline}"
+	done
+}
+
+load_config() {
+	[ -f /etc/config/ghboost ] || return 0
+	local sec val
+	if uci -q get ghboost.main >/dev/null 2>&1; then
+		sec=main
+	else
+		sec="@ghboost[0]"
+	fi
+	uci -q get "ghboost.$sec" >/dev/null 2>&1 || return 0
+
+	val="$(uci -q get "ghboost.$sec.listen_port")"; [ -n "$val" ] && LISTEN_PORT="$val"
+	val="$(uci -q get "ghboost.$sec.domains_file")";  [ -n "$val" ] && DOMAINS="$val"
+	val="$(uci -q get "ghboost.$sec.fake_cidr")"
+	[ -n "$val" ] && { FAKE_CIDR="$val"; CIDR_USER=1; }
+	val="$(uci -q get "ghboost.$sec.max_conns")"
+	[ -n "$val" ] && { MAX_CONNS="$val"; MAX_CONNS_USER=1; }
+	val="$(uci -q get "ghboost.$sec.log_file")";      [ -n "$val" ] && LOG_FILE="$val"
+	val="$(uci -q get "ghboost.$sec.ca_cert")";       [ -n "$val" ] && CA_CERT="$val"
+	val="$(uci -q get "ghboost.$sec.ca_key")";        [ -n "$val" ] && CA_KEY="$val"
+
+	val="$(uci -q get "ghboost.$sec.enabled")"
+	case "$val" in
+	1|on|true|yes|enabled) ENABLED=1 ;;
+	*) ENABLED=0 ;;
+	esac
+
+
+	local upstream
+	upstream="$(uci -q get "ghboost.$sec.dns_upstream")"
+	[ -n "$upstream" ] || upstream="$(uci -q get "ghboost.$sec.doh_url")"
+	if [ -n "$upstream" ]; then
+		DNS_UPSTREAM="$upstream"
+	else
+		DNS_UPSTREAM="$DNS_UPSTREAM_DEFAULT"
+	fi
+
+	DNS_UPSTREAM=$(printf '%s' "$DNS_UPSTREAM" | tr ' \n' ',,' | tr -d '`' | sed 's#[^A-Za-z0-9:.,/_-]##g')
+
+	CFG_FP="$(cfg_fingerprint)"
+}
+
+port_in_use() {
+	local hex
+	hex="$(printf '%04X' "$1")"
+	awk -v p=":$hex" '
+		FNR > 1 && $4 == "0A" && index($2, p) == length($2) - length(p) + 1 { f = 1 }
+		END { exit(f ? 0 : 1) }
+	' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
+find_free_port() {
+	local p="${1:-18443}" n=0
+	while [ "$n" -lt 256 ]; do
+		if ! port_in_use "$p"; then
+			echo "$p"
+			return 0
+		fi
+		p=$((p + 1))
+		n=$((n + 1))
+	done
+	echo "${1:-18443}"
+}
+
+addr_conflict() {
+	local p
+	p="$(printf '%s' "$1" | sed 's/\./\\./g')"
+	ip_addrs | grep -qE "inet ${p}\.[0-9]+"
+}
+
+route_conflict() {
+	local out
+	out="$(ip -4 route get "$1" 2>/dev/null | head -n 1)"
+	[ -n "$out" ] || return 1
+	case "$out" in
+	*" via "*) return 1 ;;
+	esac
+	return 0
+}
+
+auto_fake_cidr() {
+	local o3=64 cand
+	while [ "$o3" -le 127 ]; do
+		cand="100.$o3.0"
+		o3=$((o3 + 1))
+		addr_conflict "$cand" && continue
+		route_conflict "$cand.1" && continue
+		echo "$cand.0/24"
+		return 0
+	done
+	for cand in 198.18.0 198.19.0; do
+		addr_conflict "$cand" && continue
+		route_conflict "$cand.1" && continue
+		echo "$cand.0/24"
+		return 0
+	done
+	echo "100.64.0.0/24"
+}
+
+auto_max_conns() {
+	local kb
+	kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)"
+	case "$kb" in
+	''|*[!0-9]*)
+		echo 128
+		;;
+	*)
+		if [ "$kb" -lt 131072 ]; then
+			echo 64
+		elif [ "$kb" -lt 262144 ]; then
+			echo 96
+		elif [ "$kb" -lt 1048576 ]; then
+			echo 128
+		else
+			echo 256
+		fi
+		;;
+	esac
+}
+
+prepare_domains() {
+	local src="$1" pfx pfx2 tmp
+	pfx="$(printf '%s' "${FAKE_CIDR%/*}" | cut -d. -f1-3)"
+	pfx2="$(printf '%s' "${FAKE_CIDR%/*}" | cut -d. -f1-2)"
+	case "$pfx" in
+	100.64.0)
+		DOMAINS="$src"
+		return 0
+		;;
+	esac
+
+	tmp=/tmp/ghboost.domains.conf
+	awk -v p="$pfx2" '
+		/^[[:space:]]*#/ { print; next }
+		NF >= 2 && $1 ~ /^100\.64\./ { sub(/^100\.64\./, p "."); print; next }
+		{ print }
+	' "$src" > "$tmp" 2>/dev/null || return 0
+	[ -s "$tmp" ] || return 0
+	DOMAINS="$tmp"
+	gl "fake_cidr=$FAKE_CIDR 与默认映射文件不同, 已生成运行时映射 $tmp"
+}
+
+apply_auto_config() {
+	local auto_cidr free_port
+
+	refresh_ip_addrs
+
+	if [ "$CIDR_USER" = 0 ]; then
+		auto_cidr="$(auto_fake_cidr)"
+		if [ "$auto_cidr" != "$FAKE_CIDR" ]; then
+			gl "fake IP 网段 $FAKE_CIDR 与本机地址或路由冲突, 自动改用 $auto_cidr"
+		fi
+		FAKE_CIDR="$auto_cidr"
+	fi
+	if [ "$MAX_CONNS_USER" = 0 ]; then
+		MAX_CONNS="$(auto_max_conns)"
+	fi
+
+	free_port="$(find_free_port "$LISTEN_PORT")"
+	if [ "$free_port" != "$LISTEN_PORT" ]; then
+		gl "端口 $LISTEN_PORT 已被占用, 自动改用 $free_port"
+	fi
+	LISTEN_PORT="$free_port"
+
+	prepare_domains "$DOMAINS"
+}
+
+write_runtime() {
+	mkdir -p /tmp 2>/dev/null
+	{
+		printf 'port=%s\n' "$LISTEN_PORT"
+		printf 'cidr=%s\n' "$FAKE_CIDR"
+		printf 'maxconns=%s\n' "$MAX_CONNS"
+		printf 'domains=%s\n' "$DOMAINS"
+		printf 'dns=%s\n' "$DNS_UPSTREAM"
+		printf 'log=%s\n' "$LOG_FILE"
+	} > "$RUNTIME" 2>/dev/null
+}
+
+read_runtime() {
+	local k v
+	[ -f "$RUNTIME" ] || return 0
+	while IFS='=' read -r k v; do
+		[ -n "$v" ] || continue
+		case "$k" in
+		port) LISTEN_PORT="$v" ;;
+		cidr) FAKE_CIDR="$v" ;;
+		maxconns) MAX_CONNS="$v" ;;
+		domains) DOMAINS="$v" ;;
+		dns) DNS_UPSTREAM="$v" ;;
+		log) LOG_FILE="$v" ;;
+		esac
+	done < "$RUNTIME"
+}
+
+check_fake_conflict() {
+	local p1 p2
+	p1="${FAKE_CIDR%%.*}"
+	p2="$(printf '%s' "$FAKE_CIDR" | cut -d. -f2)"
+	if ip_addrs | grep -qE "inet ${p1}\.${p2}\."; then
+		gl "WARN: 本机接口地址落在 fake_cidr=$FAKE_CIDR 段内, 可能冲突"
+	fi
+}
+
+dnsmasq_our_rules() {
+	local rule d src
+	src="$DOMAINS"
+	[ -f "$src" ] || src=/usr/share/ghboost/domains.conf
+	awk '!/^[[:space:]]*#/ && NF>=2 {print $2}' "$src" 2>/dev/null | sort -u > /tmp/ghboost.domlist
+	uci -q get dhcp.@dnsmasq[0].address 2>/dev/null | tr ' ' '\n' | while IFS= read -r rule; do
+		[ -n "$rule" ] || continue
+		case "$rule" in
+		/*/*) ;;
+		*) continue ;;
+		esac
+		d="${rule#/}"
+		d="${d%%/*}"
+		grep -qx "$d" /tmp/ghboost.domlist && printf '%s\n' "$rule"
+	done
+}
+
+setup_dnsmasq() {
+	local rule new_rules cur_rules
+
+	if ! uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
+		gl "FAIL: 找不到 dhcp.@dnsmasq[0], 无法下发 fake IP 应答"
+		return 0
+	fi
+
+	new_rules="$(awk '!/^[[:space:]]*#/ && NF>=2 {print "/"$2"/"$1}' "$DOMAINS" 2>/dev/null)"
+
+	cur_rules="$(dnsmasq_our_rules)"
+
+	if [ "$new_rules" = "$cur_rules" ]; then
+		gl "dnsmasq 规则未变化, 跳过重载"
+		ensure_dhcp_force
+		return 0
+	fi
+
+	ensure_dhcp_force
+
+	local batch=/tmp/ghboost.uci.batch
+	: > "$batch"
+	if [ -n "$cur_rules" ]; then
+		printf '%s\n' "$cur_rules" | while IFS= read -r rule; do
+			[ -n "$rule" ] || continue
+			printf 'del_list dhcp.@dnsmasq[0].address=%s\n' "$rule"
+		done >> "$batch"
+	fi
+	printf '%s\n' "$new_rules" | while IFS= read -r rule; do
+		[ -n "$rule" ] || continue
+		printf 'add_list dhcp.@dnsmasq[0].address=%s\n' "$rule"
+	done >> "$batch"
+
+	uci -q batch < "$batch"
+	rm -f "$batch"
+	uci -q commit dhcp
+	reload_dnsmasq
+}
+
+dhcp_range_ok() {
+	local f found=0
+	for f in /var/etc/dnsmasq.conf.*; do
+		[ -f "$f" ] || continue
+		found=1
+		grep -qE '^(--)?dhcp-range=' "$f" && return 0
+	done
+	[ "$found" = 0 ]
+}
+
+dhcp_expected() {
+	uci -q get dhcp.lan >/dev/null 2>&1 || return 1
+	[ "$(uci -q get dhcp.lan.ignore)" = "1" ] && return 1
+	[ "$(uci -q get dhcp.odhcpd.maindhcp)" = "1" ] && return 1
+	return 0
+}
+
+ensure_dhcp_force() {
+	uci -q get dhcp.lan >/dev/null 2>&1 || return 0
+	[ "$(uci -q get dhcp.lan.force)" = "1" ] && return 0
+
+	uci -q set dhcp.lan.force='1'
+	uci -q commit dhcp
+	gl "已设置 LAN force=1 模式"
+}
+
+reload_dnsmasq() {
+	local i=0 locked=0
+
+	while [ "$i" -lt 40 ]; do
+		if mkdir "$DNSMASQ_LOCK" 2>/dev/null; then
+			locked=1
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.2 2>/dev/null || sleep 1
+	done
+	if [ "$locked" = 0 ]; then
+		gl "WARN: 等 dnsmasq 锁超时, 强制接管"
+		rmdir "$DNSMASQ_LOCK" 2>/dev/null
+		mkdir "$DNSMASQ_LOCK" 2>/dev/null && locked=1
+	fi
+
+	rm -f $DNSMASQ_STAMP_GLOB 2>/dev/null
+
+	if [ "$(uci -q get dhcp.lan.force)" = "1" ] && pidof dnsmasq >/dev/null 2>&1; then
+		/etc/init.d/dnsmasq reload >/dev/null 2>&1
+		sleep 1
+		if ! dhcp_expected || dhcp_range_ok; then
+			[ "$locked" = 1 ] && rmdir "$DNSMASQ_LOCK" 2>/dev/null
+			return 0
+		fi
+		gl "WARN: dnsmasq reload 后 dhcp-range 丢失, 改用 stop/start 修复"
+		rm -f $DNSMASQ_STAMP_GLOB 2>/dev/null
+	fi
+
+	if pidof dnsmasq >/dev/null 2>&1; then
+		/etc/init.d/dnsmasq stop >/dev/null 2>&1
+		i=0
+		while [ "$i" -lt 25 ] && pidof dnsmasq >/dev/null 2>&1; do
+			sleep 0.2 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+	fi
+
+	/etc/init.d/dnsmasq start >/dev/null 2>&1
+	sleep 1
+
+	if dhcp_expected && ! dhcp_range_ok; then
+		gl "WARN: dnsmasq 启动后配置里没有 dhcp-range, 清缓存再重启一次"
+		rm -f $DNSMASQ_STAMP_GLOB 2>/dev/null
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+		sleep 1
+		if dhcp_range_ok; then
+			gl "dnsmasq 的 DHCP 已恢复正常"
+		else
+			gl "FAIL: dnsmasq 仍没有 dhcp-range, 客户端会拿不到 IP;"
+			gl "      检查 /etc/config/dhcp 里 lan 的 force 选项, 或手动 /etc/init.d/dnsmasq restart"
+		fi
+	fi
+
+	[ "$locked" = 1 ] && rmdir "$DNSMASQ_LOCK" 2>/dev/null
+	return 0
+}
+
+remove_dnsmasq() {
+	local rules
+	rules="$(dnsmasq_our_rules)"
+
+	if [ -z "$rules" ]; then
+		gl "没有需要移除的 fake IP 规则, 跳过 dnsmasq 重载"
+		return 0
+	fi
+
+	local batch=/tmp/ghboost.uci.batch
+	: > "$batch"
+	printf '%s\n' "$rules" | while IFS= read -r rule; do
+		[ -n "$rule" ] || continue
+		printf 'del_list dhcp.@dnsmasq[0].address=%s\n' "$rule"
+	done >> "$batch"
+	uci -q batch < "$batch"
+	rm -f "$batch"
+	uci -q commit dhcp
+	reload_dnsmasq
+	gl "dnsmasq fake IP 规则已移除"
+}
+
+verify_dnsmasq() {
+	local ip dom out
+	dom="github.com"
+	ip="$(awk '$2=="github.com"{print $1; exit}' "$DOMAINS" 2>/dev/null)"
+	if [ -z "$ip" ]; then
+		gl "WARN: $DOMAINS 里没有 github.com, 跳过解析自检"
+		return 0
+	fi
+	if ! command -v nslookup >/dev/null 2>&1; then
+		gl "WARN: 系统没有 nslookup, 跳过解析自检"
+		return 0
+	fi
+	if command -v timeout >/dev/null 2>&1; then
+		out="$(timeout 6 nslookup "$dom" 127.0.0.1 2>&1 | tr -d '\r')"
+	else
+		out="$(nslookup "$dom" 127.0.0.1 2>&1 | tr -d '\r')"
+	fi
+	if printf '%s' "$out" | grep -qF "$ip"; then
+		gl "解析自检通过: $dom -> $ip"
+	else
+		gl "WARN: 解析自检失败, 向 127.0.0.1 查 $dom 没拿到 $ip; 检查 dnsmasq 是否加载了规则、53 端口是否被其它程序占用"
+	fi
+	return 0
+}
+
+fw_backend() {
+	if command -v nft >/dev/null 2>&1; then
+		echo nft
+	elif command -v iptables >/dev/null 2>&1; then
+		echo iptables
+	else
+		echo none
+	fi
+}
+
+setup_firewall() {
+	local backend
+	backend="$(fw_backend)"
+
+	if [ "$backend" = none ]; then
+		gl "系统里既没有 nft 也没有 iptables, 无法下发重定向规则"
+		return 1
+	fi
+
+	printf '%s %s %s\n' "$backend" "$FAKE_CIDR" "$LISTEN_PORT" > "$STATE"
+
+	if [ "$backend" = nft ]; then
+		nft delete table ip ghboost 2>/dev/null
+		nft add table ip ghboost
+		nft 'add chain ip ghboost prerouting { type nat hook prerouting priority dstnat; policy accept; }'
+		nft add rule ip ghboost prerouting ip daddr "$FAKE_CIDR" meta l4proto tcp \
+			redirect to :"$LISTEN_PORT"
+	else
+		iptables -t nat -N GH_BOOST 2>/dev/null || true
+		iptables -t nat -F GH_BOOST
+		iptables -t nat -A GH_BOOST -p tcp -j REDIRECT --to-ports "$LISTEN_PORT"
+		iptables -t nat -C PREROUTING -d "$FAKE_CIDR" -j GH_BOOST 2>/dev/null \
+			|| iptables -t nat -I PREROUTING 1 -d "$FAKE_CIDR" -j GH_BOOST
+	fi
+
+	gl "转发规则已下发: backend=$backend fake=$FAKE_CIDR port=$LISTEN_PORT"
+}
+
+remove_firewall() {
+	local backend fake
+	if [ -f "$STATE" ]; then
+		read -r backend fake _ < "$STATE"
+	fi
+	[ -n "$fake" ] || fake="$FAKE_CIDR"
+	[ -n "$backend" ] || backend="$(fw_backend)"
+
+	case "$backend" in
+	nft)
+		nft delete table ip ghboost 2>/dev/null || true
+		;;
+	iptables)
+		iptables -t nat -D PREROUTING -d "$fake" -j GH_BOOST 2>/dev/null || true
+		iptables -t nat -F GH_BOOST 2>/dev/null || true
+		iptables -t nat -X GH_BOOST 2>/dev/null || true
+		;;
+	esac
+	rm -f "$STATE"
+
+	gl "转发规则已移除"
+}
+
+start_service() {
+	load_config
+	if [ "$ENABLED" != "1" ]; then
+		/etc/init.d/ghboost disable 2>/dev/null
+		gl "配置已禁用，不启动服务"
+		return 0
+	fi
+	if [ ! -x "$PROG" ]; then
+		gl "FAIL: $PROG 不存在或不可执行 —— 核心包 ghboost 没装, 服务无法启动"
+		return 1
+	fi
+	[ -e /etc/rc.d/S99ghboost ] || /etc/init.d/ghboost enable 2>/dev/null
+
+	apply_auto_config
+	check_fake_conflict
+
+	mkdir -p "$(dirname "$CA_CERT")" 2>/dev/null
+
+	gl "start_service 开始, fake=$FAKE_CIDR port=$LISTEN_PORT max_conns=$MAX_CONNS"
+	if ! setup_firewall; then
+		return 1
+	fi
+
+	write_runtime
+	printf '%s\n' "$CFG_FP" > "$CFG_STATE" 2>/dev/null
+
+	procd_open_instance
+	procd_set_param command "$PROG" \
+		-listen ":$LISTEN_PORT" \
+		-dns "$DNS_UPSTREAM" \
+		-domains "$DOMAINS" \
+		-max-conns "$MAX_CONNS" \
+		-ca-cert "$CA_CERT" \
+		-ca-key "$CA_KEY" \
+		-stats-file "$STATS_FILE" \
+		-best-file "$BEST_FILE" \
+		-log-file "$LOG_FILE"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	setup_dnsmasq
+	verify_dnsmasq
+}
+
+cfg_fingerprint() {
+	printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+		"$ENABLED" "$LISTEN_PORT" "$FAKE_CIDR" "$MAX_CONNS" "$DNS_UPSTREAM" \
+		"$DOMAINS" "$LOG_FILE" "$CA_CERT" "$CA_KEY"
+}
+
+reload_service() {
+	load_config
+
+	local running=0
+	[ -n "$(ghboost_pids)" ] && running=1
+
+	if [ "$ENABLED" != "1" ] && [ "$running" = 1 ]; then
+		gl "配置已禁用 服务运行中，开始停止服务"
+		stop_service
+		return 0
+	fi
+
+	if [ "$running" = 0 ]; then
+		if [ "$ENABLED" = "1" ]; then
+			gl "配置已启用 服务未运行，开始启动服务"
+			rc_procd start_service
+			return $?
+		else
+			gl "配置已禁用 服务未运行，仅保存配置"
+		fi
+		return 0
+	fi
+
+	local prev=""
+	[ -f "$CFG_STATE" ] && prev="$(cat "$CFG_STATE")"
+	if [ "$prev" != "$CFG_FP" ]; then
+		gl "配置变化，重启服务"
+		stop_service
+		rc_procd start_service
+		return 0
+	fi
+
+	read_runtime
+	check_fake_conflict
+	setup_dnsmasq
+	setup_firewall
+	local pids
+	pids="$(ghboost_pids)"
+	[ -n "$pids" ] && kill -HUP $pids 2>/dev/null
+	gl "reload 完成"
+}
+
+stop_service() {
+	load_config
+	read_runtime
+	gl "stop_service 开始, pid=$(ghboost_pids | tr '\n' ' ')"
+
+	ubus call service delete '{"name":"ghboost"}' >/dev/null 2>&1 || true
+
+	local pids
+	pids="$(ghboost_pids)"
+	if [ -n "$pids" ]; then
+		kill -TERM $pids 2>/dev/null || true
+		gl "等待进程退出: $pids"
+	fi
+
+	remove_firewall
+	remove_dnsmasq
+	rm -f "$STATS_FILE" "$CFG_STATE" "$RUNTIME" "$DNSCHECK_FILE"
+
+	local i=0
+	while [ "$i" -lt 6 ] && [ -n "$(ghboost_pids)" ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	pids="$(ghboost_pids)"
+	if [ -n "$pids" ]; then
+		gl "进程没退, 强制 KILL: $pids"
+		kill -9 $pids 2>/dev/null || true
+	fi
+
+	gl "stop_service 完成, pid=$(ghboost_pids | tr '\n' ' ')"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "ghboost"
+	procd_add_reload_trigger "firewall"
+	procd_add_reload_trigger "dhcp"
+}
+
+diagnose() {
+	load_config
+	[ -n "$(ghboost_pids)" ] && read_runtime
+
+	echo "=== ghboost 自检 ==="
+	local svc bin cnt
+	if [ -n "$(ghboost_pids)" ]; then
+		svc="运行中 pid=$(ghboost_pids | tr '\n' ' ')"
+	else
+		svc="未运行"
+	fi
+	if [ -x "$PROG" ]; then
+		bin="$PROG 存在"
+	else
+		bin="$PROG 缺失"
+	fi
+	cnt=$(awk '!/^[[:space:]]*#/ && NF' "$DOMAINS" 2>/dev/null | wc -l)
+
+	printf '%-14s %s\n' "进程" "$svc"
+	printf '%-14s %s\n' "二进制" "$bin"
+	printf '%-14s %s\n' "fake_cidr" "$FAKE_CIDR"
+	printf '%-14s %s\n' "监听端口" "$LISTEN_PORT"
+	printf '%-14s %s\n' "域名映射" "$cnt 条 ($DOMAINS)"
+	echo
+
+	echo "-- CA 证书 (TLS MITM 必需)"
+	if [ -f "$CA_CERT" ]; then
+		echo "OK: CA 证书存在 ($CA_CERT)"
+		echo "    客户端需安装并信任此证书才能正常访问 GitHub HTTPS"
+		echo "    下载方式(任选其一):"
+		echo "      1) LuCI → 服务 → 黑猫加速 → CA 证书 → 下载 CA 证书 (推荐)"
+		echo "         页面路径: /admin/services/ghboost/ca"
+		echo "      2) 浏览器直接下载: http://<路由器IP>/admin/services/ghboost/ca_cert"
+		echo "      3) scp root@<路由器IP>:$CA_CERT ."
+	else
+		echo "WARN: CA 证书不存在, 服务启动时会自动生成"
+		echo "      生成后到 LuCI → 服务 → 黑猫加速 → CA 证书 页面下载"
+		echo "      或直接访问: http://<路由器IP>/admin/services/ghboost/ca_cert"
+	fi
+	echo
+
+	echo "-- 转发规则"
+	case "$(fw_backend)" in
+	nft)
+		if nft list table ip ghboost >/dev/null 2>&1; then
+			echo "OK: nft 表 ip ghboost 存在"
+		else
+			echo "FAIL: nft 表 ip ghboost 不存在 (服务未启动, 或 fw4 重载后没重建)"
+		fi
+		;;
+	iptables)
+		if iptables -t nat -S GH_BOOST >/dev/null 2>&1; then
+			echo "OK: iptables 链 GH_BOOST 存在"
+		else
+			echo "FAIL: iptables 链 GH_BOOST 不存在"
+		fi
+		;;
+	*)
+		echo "FAIL: 系统里既没有 nft 也没有 iptables"
+		;;
+	esac
+	echo
+
+	echo "-- dnsmasq 是否已下发 fake IP 应答"
+	local n
+	n="$(uci -q get dhcp.@dnsmasq[0].address 2>/dev/null | tr ' ' '\n' | grep -c .)"
+	if [ "${n:-0}" -gt 0 ]; then
+		echo "OK: dhcp.@dnsmasq[0].address 里有 $n 条规则"
+	else
+		echo "FAIL: dhcp.@dnsmasq[0].address 里没有规则 (服务可能没在运行)"
+	fi
+	echo
+
+	echo "-- DNS 上游"
+	echo "   $DNS_UPSTREAM"
+
+	echo
+
+	echo "-- dnsmasq 是否应答 fake IP"
+	local ip dom out
+	ip=$(awk '!/^#/ && NF>=2 {print $1; exit}' "$DOMAINS" 2>/dev/null)
+	dom=$(awk '!/^#/ && NF>=2 {print $2; exit}' "$DOMAINS" 2>/dev/null)
+	if [ -z "$ip" ] || [ -z "$dom" ]; then
+		echo "FAIL: 从 $DOMAINS 读不出任何映射"
+	elif ! command -v nslookup >/dev/null 2>&1; then
+		echo "SKIP: 没有 nslookup, 无法自测 (装 bind-dig 或 busybox 自带 nslookup)"
+	else
+		if command -v timeout >/dev/null 2>&1; then
+			out=$(timeout 6 nslookup "$dom" 127.0.0.1 2>&1 | tr -d '\r')
+		else
+			out=$(nslookup "$dom" 127.0.0.1 2>&1 | tr -d '\r')
+		fi
+		if echo "$out" | grep -q "$ip"; then
+			echo "OK: $dom -> $ip"
+		else
+			echo "FAIL: 向 127.0.0.1 查 $dom 没拿到 $ip"
+			echo "      常见原因:"
+			echo "      1) 客户端的 DNS 没走这台路由器 (例如直接指到 AdGuardHome/smartdns/公共 DNS)"
+			echo "      2) dnsmasq 没加载规则目录 (conf-dir 里没有 ghboost 文件)"
+			echo "      3) 53 端口被别的程序接管 (AdGuardHome 直接监听 53)"
+			echo "      实际应答: $(echo "$out" | tr '\n' ' ' | cut -c1-160)"
+		fi
+	fi
+	echo
+
+	echo "-- DHCP 是否正常 (dnsmasq 的 dhcp-range)"
+	if ! dhcp_expected; then
+		echo "SKIP: dnsmasq 不负责 DHCP (lan 被 ignore 或 odhcpd 接管), 无需检查"
+	elif dhcp_range_ok; then
+		if [ "$(uci -q get dhcp.lan.force)" = "1" ]; then
+			echo "OK: 配置里有 dhcp-range, 且 lan 已设 force 1"
+		else
+			echo "WARN: 配置里有 dhcp-range, 但 lan 没设 force 1"
+			echo "      重启一次服务会自动补上; 补上之前每次 dnsmasq reload 都有"
+			echo "      被误判成「已有 DHCP 服务器」而丢掉 dhcp-range 的风险"
+		fi
+	else
+		echo "FAIL: dnsmasq 配置里没有 dhcp-range, 客户端拿不到 IP"
+		echo "      通常是 dnsmasq reload 时旧实例还在应答, 被 dhcp_check 误判成已有服务器"
+		echo "      修复: uci set dhcp.lan.force='1' && uci commit dhcp"
+		echo "            rm -f /var/run/dnsmasq.*.dhcp && /etc/init.d/dnsmasq restart"
+	fi
+	echo
+
+	echo "-- fake IP 段冲突"
+	local conflict=0 p1 p2
+	p1="${FAKE_CIDR%%.*}"
+	p2="$(printf '%s' "$FAKE_CIDR" | cut -d. -f2)"
+	if ip_addrs | grep -qE "inet ${p1}\.${p2}\."; then
+		echo "WARN: 本机接口地址落在 fake_cidr=$FAKE_CIDR 段内, 会和 fake IP 冲突"
+		conflict=1
+	fi
+	[ "$conflict" = 0 ] && echo "OK: 没发现同段冲突"
+	echo
+
+	echo "-- 最近日志 (ghboost)"
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 5 logread -e ghboost 2>/dev/null | tail -n 20
+	else
+		logread -e ghboost 2>/dev/null | tail -n 20
+	fi
+}
+
+extra_command "diagnose" "输出自检信息 (排查为什么没加速)"

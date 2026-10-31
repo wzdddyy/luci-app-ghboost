@@ -1,0 +1,42 @@
+#!/bin/sh
+[ -f /etc/init.d/ghboost ] || exit 0
+[ -f /etc/config/ghboost ] || exit 0
+
+if ! uci -q get ghboost.main.enabled >/dev/null 2>&1; then
+	old=$(uci -q get ghboost.main.install_enabled 2>/dev/null)
+	[ "$old" = "1" ] || old='0'
+	uci -q set ghboost.main.enabled="$old"
+	uci -q commit ghboost
+fi
+
+uci -q delete ghboost.main.install_enabled 2>/dev/null
+
+for k in listen_port fake_cidr max_conns; do
+	if uci -q get "ghboost.main.$k" >/dev/null 2>&1; then
+		uci -q delete "ghboost.main.$k"
+		uci -q commit ghboost
+	fi
+done
+
+val="$(uci -q get ghboost.main.dns_upstream 2>/dev/null)"
+case "$val" in
+*"
+"*)
+	uci -q delete ghboost.main.dns_upstream
+	printf '%s\n' "$val" | while IFS= read -r u; do
+		u="$(printf '%s' "$u" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+		[ -n "$u" ] || continue
+		uci -q add_list "ghboost.main.dns_upstream=$u"
+	done
+	uci -q commit ghboost
+	;;
+esac
+
+if [ "$(uci -q get ghboost.main.enabled)" = "1" ]; then
+	/etc/init.d/ghboost enable 2>/dev/null || true
+else
+	/etc/init.d/ghboost disable 2>/dev/null || true
+fi
+
+rm -f /etc/uci-defaults/99-ghboost
+exit 0

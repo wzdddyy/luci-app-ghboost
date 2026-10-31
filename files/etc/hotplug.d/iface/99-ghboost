@@ -1,0 +1,17 @@
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+[ -x /etc/init.d/ghboost ] || exit 0
+
+pidof ghboost >/dev/null 2>&1 || exit 0
+
+STAMP=/tmp/.ghboost_ifup
+now=$(date +%s 2>/dev/null || echo 0)
+last=$(cat "$STAMP" 2>/dev/null || echo 0)
+if [ "$now" -gt 0 ] && [ $((now - last)) -lt 30 ]; then
+	exit 0
+fi
+[ "$now" -gt 0 ] && echo "$now" > "$STAMP"
+
+/etc/init.d/ghboost reload >/dev/null 2>&1
+logger -t ghboost "接口 $INTERFACE up, 已重建转发规则"
+exit 0

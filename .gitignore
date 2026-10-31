@@ -1,0 +1,7 @@
+ghboost/bin/
+ghboost-linux-*
+files/usr/bin/ghboost
+*.ipk
+*.apk
+out/
+sdk/

@@ -1,0 +1,8 @@
+config ghboost 'main'
+	option enabled '0'
+	list dns_upstream 'https://dns.alidns.com/dns-query'
+	list dns_upstream 'https://doh.pub/dns-query'
+
+	option domains_file '/usr/share/ghboost/domains.conf'
+
+	option log_file '/tmp/ghboost.log'

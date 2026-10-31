@@ -1,0 +1,36 @@
+#!/bin/sh
+
+[ -f /etc/config/ghproxy ] || [ -f /usr/share/ghproxy/domains.conf ] || [ -x /etc/init.d/ghproxy ] || exit 0
+
+OLD_CFG=/etc/config/ghproxy
+NEW_CFG=/etc/config/ghboost
+OLD_DOMAINS=/usr/share/ghproxy/domains.conf
+NEW_DOMAINS=/usr/share/ghboost/domains.conf
+
+if [ -f "$OLD_CFG" ] && [ ! -f "$NEW_CFG" ]; then
+	cp "$OLD_CFG" "$NEW_CFG"
+	sed -i \
+		-e 's#/etc/ghproxy#/etc/ghboost#g' \
+		-e 's#/usr/share/ghproxy#/usr/share/ghboost#g' \
+		-e 's#/tmp/ghproxy#/tmp/ghboost#g' \
+		"$NEW_CFG"
+fi
+
+if [ -f "$OLD_DOMAINS" ] && [ -f "$NEW_DOMAINS" ] && ! cmp -s "$OLD_DOMAINS" "$NEW_DOMAINS"; then
+	cp "$NEW_DOMAINS" "$NEW_DOMAINS.dist"
+	cp "$OLD_DOMAINS" "$NEW_DOMAINS"
+fi
+
+if [ -x /etc/init.d/ghproxy ]; then
+	/etc/init.d/ghproxy stop >/dev/null 2>&1
+	/etc/init.d/ghproxy disable >/dev/null 2>&1
+fi
+rm -f /etc/rc.d/S99ghproxy
+
+if [ -d /etc/ghproxy ]; then
+	rm -rf /etc/ghproxy
+	logger -t ghboost "已从 ghproxy 迁移：CA 已按新名称重新生成，客户端需重新安装 ghboost-ca.crt"
+fi
+
+rm -f /etc/uci-defaults/97-ghboost-migrate
+exit 0

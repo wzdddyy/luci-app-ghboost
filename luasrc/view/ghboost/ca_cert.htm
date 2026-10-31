@@ -1,0 +1,153 @@
+<div class="gh-app">
+    <div class="gh-card">
+        <div class="gh-cert-head">
+            <div class="gh-cert-title">ghboost CA<span>ECDSA P-256</span></div>
+            <span class="gh-tag gh-muted" id="gh-ca-state">检测中</span>
+        </div>
+        <div class="gh-cert-kv">
+            <div><div class="k">颁发者</div><div class="v" id="gh-ca-subject">--</div></div>
+            <div><div class="k">有效期至</div><div class="v" id="gh-ca-expire">--</div></div>
+            <div><div class="k">SHA-256 指纹</div><div class="v" id="gh-ca-fp">--</div></div>
+        </div>
+        <div class="gh-cert-actions">
+            <a class="gh-primary" href="<%=luci.dispatcher.build_url()%>/admin/services/ghboost/ca_cert">下载证书 (ghboost-ca.crt)</a>
+            <span class="gh-note-text">装到系统根证书库后，浏览器 / Git / GitHub Desktop 会自动信任</span>
+        </div>
+    </div>
+
+    <div class="gh-card">
+        <div class="gh-tabs" id="gh-tabs">
+            <span class="gh-tab on" data-panel="win">Windows</span>
+            <span class="gh-tab" data-panel="mac">macOS</span>
+            <span class="gh-tab" data-panel="linux">Linux</span>
+            <span class="gh-tab" data-panel="ios">iOS</span>
+            <span class="gh-tab" data-panel="android">Android</span>
+            <span class="gh-tab" data-panel="firefox">Firefox</span>
+        </div>
+
+        <div class="gh-panel on" data-panel="win">
+            <p>以管理员身份打开 PowerShell，安装到「本地计算机 → 受信任的根证书颁发机构」。只装到当前用户目录时，Git、GitHub Desktop 等工具识别不到。</p>
+            <div class="gh-code">
+                <code>certutil -addstore -f Root C:\Users\你\Downloads\ghboost-ca.crt</code>
+                <button class="gh-btn gh-copy" type="button">复制</button>
+            </div>
+            <div class="gh-note"><b>注意</b>：Chrome / Edge 114+ 使用内置根证书库，若仍提示不受信任，需在浏览器设置中单独导入该证书。</div>
+        </div>
+
+        <div class="gh-panel" data-panel="mac">
+            <p>在终端执行，将证书加入系统钥匙串并设为始终信任。</p>
+            <div class="gh-code">
+                <code>sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/Downloads/ghboost-ca.crt</code>
+                <button class="gh-btn gh-copy" type="button">复制</button>
+            </div>
+        </div>
+
+        <div class="gh-panel" data-panel="linux">
+            <p>把证书放到系统证书目录后刷新证书库。</p>
+            <div class="gh-code">
+                <code>sudo cp ~/Downloads/ghboost-ca.crt /usr/local/share/ca-certificates/ghboost-ca.crt &amp;&amp; sudo update-ca-certificates</code>
+                <button class="gh-btn gh-copy" type="button">复制</button>
+            </div>
+        </div>
+
+        <div class="gh-panel" data-panel="ios">
+            <p>下载证书后依次进入：设置 → 已下载描述文件 → 安装；再到 设置 → 通用 → 关于本机 → 证书信任设置，打开 ghboost CA 的完全信任开关。</p>
+        </div>
+
+        <div class="gh-panel" data-panel="android">
+            <p>下载证书后进入：设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书，选择刚下载的文件。</p>
+        </div>
+
+        <div class="gh-panel" data-panel="firefox">
+            <p>Firefox 使用独立证书库，不读取系统证书：选项 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 → 导入，勾选信任该 CA。</p>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var base = "<%=luci.dispatcher.build_url()%>/admin/services/ghboost";
+
+    function $(id) { return document.getElementById(id); }
+
+    var tabs = Array.prototype.slice.call(document.querySelectorAll("#gh-tabs .gh-tab"));
+    var panels = Array.prototype.slice.call(document.querySelectorAll(".gh-panel"));
+
+    function selectPlatform(name) {
+        tabs.forEach(function(t) { t.classList.toggle("on", t.getAttribute("data-panel") === name); });
+        panels.forEach(function(p) { p.classList.toggle("on", p.getAttribute("data-panel") === name); });
+    }
+
+    tabs.forEach(function(t) {
+        t.addEventListener("click", function() { selectPlatform(t.getAttribute("data-panel")); });
+    });
+
+    var ua = navigator.userAgent || "";
+    if (/iPhone|iPad|iPod/i.test(ua)) { selectPlatform("ios"); }
+    else if (/Android/i.test(ua)) { selectPlatform("android"); }
+    else if (/Macintosh|Mac OS X/i.test(ua)) { selectPlatform("mac"); }
+    else if (/Linux/i.test(ua)) { selectPlatform("linux"); }
+    else if (/Firefox/i.test(ua)) { selectPlatform("firefox"); }
+    else { selectPlatform("win"); }
+
+    Array.prototype.slice.call(document.querySelectorAll(".gh-copy")).forEach(function(btn) {
+        btn.addEventListener("click", function() {
+            var code = btn.parentNode.querySelector("code");
+            if (!code) { return; }
+            var text = code.textContent;
+            var done = function() {
+                var old = btn.textContent;
+                btn.textContent = "已复制";
+                setTimeout(function() { btn.textContent = old; }, 1500);
+            };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(done, fallback);
+            } else {
+                fallback();
+            }
+            function fallback() {
+                var ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand("copy"); done(); } catch (e) {}
+                ta.remove();
+            }
+        });
+    });
+
+    fetch(base + "/status?_=" + Date.now(), { credentials: "same-origin", cache: "no-store" })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            var ca = (d.stats && d.stats.ca) || {};
+            var state = $("gh-ca-state");
+            if (!ca.present && !d.ca_file) {
+                state.textContent = "未生成";
+                state.className = "gh-tag gh-err";
+                $("gh-ca-subject").textContent = "启动服务后自动创建";
+                $("gh-ca-expire").textContent = "--";
+                $("gh-ca-fp").textContent = "--";
+                return;
+            }
+            state.textContent = "已生成";
+            state.className = "gh-tag gh-ok";
+            $("gh-ca-subject").textContent = ca.subject || "ghboost CA";
+            $("gh-ca-expire").textContent = ca.not_after || "启动服务后显示";
+            var fp = ca.fingerprint || "";
+            var el = $("gh-ca-fp");
+            if (!fp) {
+                el.textContent = "--";
+            } else {
+                el.textContent = fp.length > 32 ? fp.slice(0, 32) + "…" : fp;
+                el.setAttribute("title", fp);
+            }
+        })
+        .catch(function() {
+            var state = $("gh-ca-state");
+            state.textContent = "读取失败";
+            state.className = "gh-tag gh-warn";
+        });
+})();
+</script>

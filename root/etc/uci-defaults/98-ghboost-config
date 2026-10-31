@@ -1,0 +1,42 @@
+#!/bin/sh
+
+CFG=/etc/config/ghboost
+TPL=/usr/share/ghboost/ghboost.config.default
+
+[ -f "$TPL" ] || exit 0
+
+if [ ! -f "$CFG" ]; then
+	cp "$TPL" "$CFG"
+	uci -q commit ghboost 2>/dev/null || true
+	rm -f /etc/uci-defaults/98-ghboost-config
+	exit 0
+fi
+
+if uci -q get ghboost.main >/dev/null 2>&1; then
+	SEC=main
+else
+	SEC="@ghboost[0]"
+fi
+uci -q get "ghboost.$SEC" >/dev/null 2>&1 || exit 0
+
+changed=0
+while IFS= read -r line; do
+	typ=$(printf '%s\n' "$line" | sed -n "s/^[[:space:]]*\(option\|list\)[[:space:]].*/\1/p")
+	[ -n "$typ" ] || continue
+	key=$(printf '%s\n' "$line" | sed -n "s/^[[:space:]]*\(option\|list\)[[:space:]]\+\([a-z_][a-z0-9_]*\)[[:space:]].*/\2/p")
+	val=$(printf '%s\n' "$line" | sed -n "s/^[[:space:]]*\(option\|list\)[[:space:]]\+[a-z_][a-z0-9_]*[[:space:]]\+'\(.*\)'[[:space:]]*$/\2/p")
+	[ -n "$key" ] && [ -n "$val" ] || continue
+
+	[ -n "$(uci -q get "ghboost.$SEC.$key" 2>/dev/null)" ] && continue
+
+	if [ "$typ" = list ]; then
+		uci -q add_list "ghboost.$SEC.$key=$val" 2>/dev/null && changed=1
+	else
+		uci -q set "ghboost.$SEC.$key=$val" 2>/dev/null && changed=1
+	fi
+done < "$TPL"
+
+[ "$changed" = "1" ] && uci -q commit ghboost 2>/dev/null || true
+
+rm -f /etc/uci-defaults/98-ghboost-config
+exit 0

@@ -1,0 +1,169 @@
+<div class="gh-app">
+    <div class="gh-log-bar">
+        <div class="gh-log-info">
+            <div class="gh-title">运行日志</div>
+            <span class="gh-log-path" id="gh-log-path">--</span>
+        </div>
+        <div class="gh-log-tools">
+            <span class="gh-log-label">自动刷新</span>
+            <div class="gh-switch sm on" id="gh-log-auto" role="switch" tabindex="0"
+                 aria-checked="true" aria-label="自动刷新"></div>
+            <select class="gh-select" id="gh-log-interval">
+                <option value="3000">3 秒</option>
+                <option value="5000">5 秒</option>
+                <option value="10000">10 秒</option>
+            </select>
+            <button class="gh-btn" id="gh-log-download" type="button">下载</button>
+        </div>
+    </div>
+
+    <div class="gh-log-body" id="gh-log-body">
+        <pre id="gh-log">加载中…</pre>
+    </div>
+
+    <div class="gh-log-foot">
+        <span id="gh-log-state">正在加载日志</span>
+        <span class="gh-follow" id="gh-log-follow" style="display:none">回到最新</span>
+    </div>
+</div>
+
+<script>
+(function() {
+    var base = "<%=luci.dispatcher.build_url()%>/admin/services/ghboost";
+    var LIMIT = 300;
+
+    var body, pre, autoEl, intervalEl, stateEl, followEl;
+    var following = true;
+    var timer = null;
+    var lastText = "";
+
+    function $(id) { return document.getElementById(id); }
+
+    function esc(s) {
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function colorize(text) {
+        return text.split("\n").map(function(line) {
+            var cls = "";
+            if (/\[(ERROR|FAIL)\]/.test(line)) { cls = "lv-err"; }
+            else if (/\[WARN\]/.test(line)) { cls = "lv-warn"; }
+            else if (/\[(INFO|RESOLVE|PROBE)\]/.test(line)) { cls = "lv-info"; }
+            var out = esc(line);
+            if (cls === "lv-info") {
+                out = out.replace(/\[(INFO|RESOLVE|PROBE)\]/, '<span class="lv-info">[$1]</span>');
+            } else if (cls) {
+                out = out.replace(/\[(ERROR|FAIL|WARN)\]/, '<span class="' + cls + '">[$1]</span>');
+            }
+            return out;
+        }).join("\n");
+    }
+
+    function setState(text) {
+        if (stateEl) { stateEl.textContent = text; }
+    }
+
+    function refresh() {
+        fetch(base + "/log_api?n=" + LIMIT + "&_=" + Date.now(),
+            { credentials: "same-origin", cache: "no-store" })
+            .then(function(r) { return r.text(); })
+            .then(function(t) {
+                lastText = t || "";
+                var atBottom = (body.scrollTop + body.clientHeight >= body.scrollHeight - 30);
+                pre.innerHTML = t ? colorize(t) : '<span class="gh-muted">(日志为空)</span>';
+                if (following || atBottom) {
+                    body.scrollTop = body.scrollHeight;
+                    following = true;
+                }
+                updateFollow();
+                setState(following ? "已跟随最新日志 · 最近 " + LIMIT + " 行" : "已暂停跟随（手动滚动后）");
+            })
+            .catch(function(e) {
+                setState("加载失败：" + e.message);
+            });
+    }
+
+    function updateFollow() {
+        if (!followEl) { return; }
+        followEl.style.display = following ? "none" : "inline";
+    }
+
+    function restartTimer() {
+        if (timer) { clearInterval(timer); timer = null; }
+        if (!autoEl.classList.contains("on")) { return; }
+        timer = setInterval(refresh, parseInt(intervalEl.value, 10) || 3000);
+    }
+
+    function bindSwitch(el, onChange) {
+        el.addEventListener("click", function() {
+            el.classList.toggle("on");
+            el.setAttribute("aria-checked", el.classList.contains("on") ? "true" : "false");
+            onChange();
+        });
+        el.addEventListener("keydown", function(e) {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                el.click();
+            }
+        });
+    }
+
+    function loadPath() {
+        fetch(base + "/status?_=" + Date.now(), { credentials: "same-origin", cache: "no-store" })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                var rt = d.runtime || {};
+                $("gh-log-path").textContent = rt.log || "/tmp/ghboost.log";
+            })
+            .catch(function() {});
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+        body = $("gh-log-body");
+        pre = $("gh-log");
+        autoEl = $("gh-log-auto");
+        intervalEl = $("gh-log-interval");
+        stateEl = $("gh-log-state");
+        followEl = $("gh-log-follow");
+
+        body.addEventListener("scroll", function() {
+            var atBottom = (body.scrollTop + body.clientHeight >= body.scrollHeight - 30);
+            following = atBottom;
+            updateFollow();
+            setState(atBottom ? "已跟随最新日志 · 最近 " + LIMIT + " 行" : "已暂停跟随（手动滚动后）");
+        });
+
+        followEl.addEventListener("click", function() {
+            following = true;
+            body.scrollTop = body.scrollHeight;
+            updateFollow();
+            refresh();
+        });
+
+        bindSwitch(autoEl, function() {
+            restartTimer();
+            if (autoEl.classList.contains("on")) { refresh(); }
+            setState(autoEl.classList.contains("on") ? "已开启自动刷新" : "已暂停刷新");
+        });
+
+        intervalEl.addEventListener("change", restartTimer);
+
+        $("gh-log-download").addEventListener("click", function() {
+            var blob = new Blob([lastText || ""], { type: "text/plain;charset=utf-8" });
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "ghboost-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".log";
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function() {
+                URL.revokeObjectURL(a.href);
+                a.remove();
+            }, 1000);
+        });
+
+        loadPath();
+        refresh();
+        restartTimer();
+    });
+})();
+</script>

@@ -1,0 +1,11 @@
+{
+	"luci-app-ghboost": {
+		"description": "Grant access to ghboost configuration",
+		"read": {
+			"uci": [ "ghboost" ]
+		},
+		"write": {
+			"uci": [ "ghboost" ]
+		}
+	}
+}

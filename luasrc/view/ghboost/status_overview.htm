@@ -1,0 +1,308 @@
+<div class="gh-app">
+    <div class="gh-head">
+        <div class="gh-sub">
+            GitHub 访问优化 · 打开开关、客户端装好 CA 证书即可使用 ·
+            <a href="https://github.com/wzdddyy/luci-app-ghboost" target="_blank" rel="noopener">项目地址</a> ·
+            <a href="https://github.com/wzdddyy/luci-app-ghboost/issues" target="_blank" rel="noopener">Bug 提交</a> ·
+            <a href="#" id="gh-donate">支持项目</a>
+        </div>
+        <div class="gh-switch" id="gh-switch" role="switch" tabindex="0"
+             aria-checked="false" aria-label="启用或停止服务"></div>
+    </div>
+
+    <div class="gh-card gh-hero">
+        <div class="gh-hero-main">
+            <span class="gh-dot" id="gh-dot"></span>
+            <div class="gh-hero-text">
+                <div class="gh-hero-title" id="gh-hero-title">检测中…</div>
+                <div class="gh-hero-sub" id="gh-hero-sub">正在读取服务状态</div>
+            </div>
+        </div>
+        <div class="gh-hero-meta">
+            <div><b id="gh-domains">--</b><span>域名映射</span></div>
+            <div><b id="gh-uptime">--</b><span>已运行</span></div>
+            <div><b id="gh-version">--</b><span>版本 核心/UI</span></div>
+        </div>
+    </div>
+
+    <div class="gh-metrics">
+        <div class="gh-metric"><div class="k">活跃连接</div><div class="v" id="gh-active">--</div></div>
+        <div class="gh-metric"><div class="k">近 1 分钟成功</div><div class="v" id="gh-ok">--</div></div>
+        <div class="gh-metric"><div class="k">近 1 分钟失败</div><div class="v" id="gh-fail">--</div></div>
+        <div class="gh-metric"><div class="k">最快延迟</div><div class="v" id="gh-best">--</div></div>
+    </div>
+
+    <div class="gh-card">
+        <div class="gh-card-title">自动配置</div>
+        <div class="gh-kv">
+            <div><div class="k">监听端口</div><div class="v" id="gh-port">--</div></div>
+            <div><div class="k">虚拟 IP 网段</div><div class="v" id="gh-cidr">--</div></div>
+            <div><div class="k">并发连接上限</div><div class="v" id="gh-max">--</div></div>
+            <div>
+                <div class="k">DNS 上游</div>
+                <div class="v"><span class="gh-tip" id="gh-dns" tabindex="0" data-tip="启动后显示">--</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="gh-card">
+        <div class="gh-card-title">
+            域名连接
+            <span class="gh-hint" id="gh-dom-hint">每 3 秒刷新</span>
+        </div>
+        <div id="gh-dom-list"><div class="gh-empty">读取中…</div></div>
+        <span class="gh-more" id="gh-more" style="display:none"></span>
+    </div>
+</div>
+
+<script>
+(function() {
+    var base = "<%=luci.dispatcher.build_url()%>/admin/services/ghboost";
+    var donateImg = "<%=resource%>/ghboost/Author.png";
+
+    function $(id) { return document.getElementById(id); }
+    function esc(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    function serviceState(d) {
+        if (d.binary !== "present") { return { title: "核心文件缺失", sub: "ghboost 核心包未安装或不可执行", cls: "err" }; }
+        if (!d.running) {
+            if (d.enabled) { return { title: "启动失败", sub: "已启用但进程未运行，查看日志页排查", cls: "err" }; }
+            return { title: "已停止", sub: "打开右上角开关即可启动", cls: "err" };
+        }
+        if (!d.tproxy) { return { title: "转发规则未生效", sub: "防火墙规则下发失败", cls: "err" }; }
+        if (d.dnsmasq !== "present") { return { title: "DNS 劫持未生效", sub: "dnsmasq 中没有 fake IP 规则", cls: "err" }; }
+        if (d.dnsmap === "none") { return { title: "缺少 github.com 映射", sub: "检查域名表文件", cls: "err" }; }
+        if (d.dnsmap === "fail") { return { title: "域名解析未生效", sub: "向 DNS 查询未拿到 fake IP", cls: "err" }; }
+        var st = d.stats || null;
+        if (st && st.uptime_sec === 0) { return { title: "启动中", sub: "正在初始化转发与预热", cls: "warn" }; }
+        var rt = d.runtime || {};
+        var sub = "监听 :" + (rt.port || (d.stats && String(d.stats.listen || "").replace(/^:/, "")) || "--");
+        if (d.dnsmap === "skip") { sub += " · 跳过解析自检"; }
+        return { title: "运行中", sub: sub, cls: "ok" };
+    }
+
+    function fmtUptime(sec) {
+        if (!sec || sec < 0) { return "--"; }
+        var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+        if (h > 0) { return h + " 小时 " + m + " 分"; }
+        return m + " 分";
+    }
+
+    function hostInfo(h) {
+        if (plainMap[h.domain]) { return { rank: 0, tag: "明文转发", cls: "gh-muted", lat: "--" }; }
+        if (!h.ips || !h.ips.length) { return { rank: 2, tag: "待解析", cls: "gh-muted", lat: "--" }; }
+        if (!h.best) {
+            if (h.ok > 0) { return { rank: 1, tag: "不稳定", cls: "gh-warn", lat: "--" }; }
+            if (h.fail > 0) { return { rank: 2, tag: "无可用 IP", cls: "gh-err", lat: "--" }; }
+            return { rank: 1, tag: "未测速", cls: "gh-muted", lat: "--" };
+        }
+        var ms = h.best_ms || 0;
+        if (ms > 800) { return { rank: 1, tag: "偏慢", cls: "gh-warn", lat: ms + " ms" }; }
+        if (h.fail > 0 && h.fail >= h.ok) { return { rank: 1, tag: "不稳定", cls: "gh-warn", lat: ms + " ms" }; }
+        return { rank: 0, tag: "正常", cls: "gh-ok", lat: ms + " ms" };
+    }
+
+    var expanded = false;
+    var lastHosts = [];
+    var plainMap = {};
+    var defaultRows = 7;
+
+    function renderHosts(hosts) {
+        lastHosts = hosts || [];
+        var list = $("gh-dom-list"), more = $("gh-more");
+        if (!list || !more) { return; }
+
+        var items = lastHosts.map(function(h) {
+            var info = hostInfo(h);
+            return { h: h, info: info };
+        }).sort(function(a, b) {
+            if (a.info.rank !== b.info.rank) { return b.info.rank - a.info.rank; }
+            return (a.h.best_ms || 0) - (b.h.best_ms || 0);
+        });
+
+        if (!items.length) {
+            list.innerHTML = '<div class="gh-empty">暂无域名映射数据，服务启动后会自动预热</div>';
+            more.style.display = "none";
+            return;
+        }
+
+        var show = expanded ? items : items.slice(0, defaultRows);
+
+        list.innerHTML = show.map(function(it) {
+            var h = it.h, info = it.info;
+            var best = h.best ? esc(h.best) : (plainMap[h.domain] ? "—" : "无可用 IP");
+            return '<div class="gh-row">' +
+                '<div class="gh-row-dom"><b>' + esc(h.domain) + "</b>" +
+                "<span>虚拟 IP " + esc(h.fake_ip || "--") + "</span></div>" +
+                '<div class="gh-row-right">' +
+                '<span class="gh-ip' + (h.best ? "" : " gh-muted") + '">' + best + "</span>" +
+                '<span class="gh-lat ' + info.cls + '">' + info.lat + "</span>" +
+                '<span class="gh-tag ' + info.cls + '">' + info.tag + "</span>" +
+                "</div></div>";
+        }).join("");
+
+        if (items.length > defaultRows) {
+            more.textContent = expanded ? "收起" : "查看全部 " + items.length + " 个域名";
+            more.style.display = "inline-block";
+        } else {
+            more.style.display = "none";
+        }
+    }
+
+    function renderAuto(d) {
+        var rt = d.runtime || {};
+        var el = $("gh-dns");
+
+        if (!d.running) {
+            el.textContent = "--";
+            el.className = "gh-tip";
+            el.setAttribute("data-tip", "启动后显示");
+            el.setAttribute("title", "启动后显示");
+        } else {
+            var ups = (d.stats && d.stats.upstreams) || [];
+            var lines = [];
+            var down = 0, fail = 0;
+
+            ups.forEach(function(u) {
+                var state = "正常";
+                if (u.down_sec > 0) { state = "不可用"; down++; }
+                else if (u.fail_cnt > 0) { state = "失败 " + u.fail_cnt + " 次"; fail++; }
+                lines.push((u.raw || "") + "  " + state);
+            });
+
+            var reason = "";
+            if (d.dnsmap === "none") { reason = "缺少 github.com 映射"; }
+            else if (d.dnsmap === "fail") { reason = "本机 DNS 未返回 fake IP"; }
+            else if (down > 0) { reason = down + " 个上游不可用"; }
+            else if (fail > 0) { reason = fail + " 个上游有失败"; }
+
+            var ok = !reason;
+            el.textContent = ok ? "解析正常" : "解析异常";
+            el.className = "gh-tip " + (ok ? "gh-ok" : "gh-err");
+
+            var tip = reason ? (reason + "\n" + lines.join("\n")) : lines.join("\n");
+            el.setAttribute("data-tip", tip || "无上游数据");
+            el.setAttribute("title", tip || "无上游数据");
+        }
+
+        $("gh-port").textContent = rt.port ? ":" + rt.port : "--";
+        $("gh-cidr").textContent = rt.cidr || "--";
+        $("gh-max").textContent = rt.maxconns || "--";
+    }
+
+    function render(d) {
+        plainMap = d.plain || {};
+        var svc = serviceState(d);
+        var dot = $("gh-dot");
+        dot.className = "gh-dot" + (svc.cls === "ok" ? " ok" : svc.cls === "warn" ? " warn" : " err");
+        $("gh-hero-title").textContent = svc.title;
+        $("gh-hero-sub").textContent = svc.sub;
+
+        var sw = $("gh-switch");
+        if (!sw.classList.contains("busy")) {
+            sw.classList.toggle("on", !!d.running);
+            sw.setAttribute("aria-checked", d.running ? "true" : "false");
+        }
+
+        renderAuto(d);
+
+        var st = d.stats || {};
+        $("gh-domains").textContent = st.domains != null ? st.domains : "--";
+        $("gh-uptime").textContent = d.running ? fmtUptime(st.uptime_sec) : "--";
+        $("gh-version").textContent = d.version_core || d.version_ui
+            ? "v" + (d.version_core || "--") + " / v" + (d.version_ui || "--")
+            : "--";
+        $("gh-version").setAttribute("title",
+            "核心 " + (d.version_core ? "v" + d.version_core : "未知") +
+            " / UI " + (d.version_ui ? "v" + d.version_ui : "未知"));
+
+        $("gh-active").innerHTML = st.active_conns != null
+            ? st.active_conns + ' <small>/ ' + (st.max_conns != null ? st.max_conns : (d.runtime && d.runtime.maxconns) || "--") + "</small>"
+            : "--";
+        $("gh-ok").textContent = d.running ? (st.ok_60s != null ? st.ok_60s : "--") : "--";
+        $("gh-fail").textContent = d.running ? (st.fail_60s != null ? st.fail_60s : "--") : "--";
+
+        var best = 0;
+        (st.hosts || []).forEach(function(h) {
+            if (h.best_ms > 0 && (!best || h.best_ms < best)) { best = h.best_ms; }
+        });
+        $("gh-best").innerHTML = best ? best + " <small>ms</small>" : "--";
+
+        var hinted = $("gh-dom-hint");
+        hinted.textContent = d.running ? "每 3 秒刷新" : "服务未运行";
+
+        if (d.running) {
+            renderHosts(st.hosts || []);
+        } else {
+            $("gh-dom-list").innerHTML = '<div class="gh-empty">服务未启动</div>';
+            $("gh-more").style.display = "none";
+            lastHosts = [];
+        }
+    }
+
+    function refresh() {
+        fetch(base + "/status?_=" + Date.now(), { credentials: "same-origin", cache: "no-store" })
+            .then(function(r) { return r.json(); })
+            .then(render)
+            .catch(function() {
+                $("gh-hero-title").textContent = "状态查询失败";
+                $("gh-hero-sub").textContent = "请刷新页面重试";
+                $("gh-dot").className = "gh-dot err";
+            });
+    }
+
+    function toggleService() {
+        var sw = $("gh-switch");
+        if (sw.classList.contains("busy")) { return; }
+
+        var want = !sw.classList.contains("on");
+        sw.classList.add("busy");
+        sw.classList.toggle("on", want);
+        window.location.href = base + "/toggle?on=" + (want ? "1" : "0");
+    }
+
+    var sw = $("gh-switch");
+    sw.addEventListener("click", toggleService);
+    sw.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleService(); }
+    });
+
+    function showDonate(ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        var old = $("gh-donate-pop");
+        if (old) {
+            old.parentNode.removeChild(old);
+            return;
+        }
+
+        var img = document.createElement("img");
+        img.src = donateImg;
+        img.alt = "赞赏码";
+        img.style.cssText = "width:260px;height:auto;background:#fff;border-radius:50%;padding:10px;box-shadow:0 10px 40px rgba(0,0,0,.55)";
+        img.addEventListener("click", function(e) { e.stopPropagation(); }, false);
+
+        var pop = document.createElement("div");
+        pop.id = "gh-donate-pop";
+        pop.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center";
+        pop.appendChild(img);
+        pop.addEventListener("click", function() { pop.parentNode.removeChild(pop); }, false);
+        document.body.appendChild(pop);
+    }
+
+    $("gh-donate").addEventListener("click", showDonate);
+
+    $("gh-more").addEventListener("click", function() {
+        expanded = !expanded;
+        renderHosts(lastHosts);
+    });
+
+    refresh();
+    setInterval(refresh, 3000);
+})();
+</script>
