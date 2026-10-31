@@ -60,14 +60,101 @@ local function readRuntime()
 end
 
 
-local function pkgVersion(name)
-	local raw = fs.readfile("/usr/lib/opkg/info/" .. name .. ".control")
-	if not raw then
-		return nil
-	end
-	local v = raw:match("[\r\n]Version:%s*([^\r\n]+)") or raw:match("^Version:%s*([^\r\n]+)")
-	return v and (v:gsub("%s+$", "")) or nil
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
+
+local function fieldOf(block, key)
+	for line in block:gmatch("[^\r\n]+") do
+		local v = line:match("^" .. key .. ":%s*(.+)$")
+		if v then
+			return trim(v)
+		end
+	end
+	return nil
+end
+
+local function parseOpkg(raw, name)
+	for block in (raw .. "\n\n"):gmatch("(.-)\n\n") do
+		if fieldOf(block, "Package") == name then
+			local v = fieldOf(block, "Version")
+			if v then
+				return v
+			end
+		end
+	end
+	return nil
+end
+
+local function parseApk(raw, name)
+	for block in (raw .. "\n\n"):gmatch("(.-)\n\n") do
+		local p = block:match("^P:([^\r\n]+)") or block:match("\nP:([^\r\n]+)")
+		if p and trim(p) == name then
+			local v = block:match("^V:([^\r\n]+)") or block:match("\nV:([^\r\n]+)")
+			if v then
+				return trim(v)
+			end
+		end
+	end
+	return nil
+end
+
+local function pkgVersionUncached(name)
+	local raw = fs.readfile("/usr/lib/opkg/info/" .. name .. ".control")
+	if raw then
+		local v = fieldOf(raw, "Version")
+		if v then
+			return v
+		end
+	end
+
+	for _, path in ipairs({ "/lib/apk/db/installed", "/usr/lib/apk/db/installed" }) do
+		raw = fs.readfile(path)
+		if raw then
+			local v = parseApk(raw, name)
+			if v then
+				return v
+			end
+		end
+	end
+
+	raw = fs.readfile("/usr/lib/opkg/status")
+	if raw then
+		local v = parseOpkg(raw, name)
+		if v then
+			return v
+		end
+	end
+
+	return nil
+end
+
+local function pkgVersion(name)
+	local cache = "/tmp/ghboost.pkg." .. name
+	local cacheMt = fs.stat(cache, "mtime") or 0
+	local newest = 0
+
+	for _, path in ipairs({ "/usr/lib/opkg/status", "/lib/apk/db/installed", "/usr/lib/apk/db/installed" }) do
+		local m = fs.stat(path, "mtime")
+		if m and m > newest then
+			newest = m
+		end
+	end
+
+	if cacheMt > 0 and cacheMt >= newest then
+		local cached = fs.readfile(cache)
+		if cached then
+			cached = trim(cached)
+			return cached ~= "" and cached or nil
+		end
+	end
+
+	local v = pkgVersionUncached(name)
+	fs.writefile(cache, (v or "") .. "\n")
+	return v
+end
+
+
 
 
 local function dnsMappingState(domainsPath)
