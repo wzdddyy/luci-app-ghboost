@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -72,6 +73,51 @@ func (b *bufferedConn) Peek(n int) ([]byte, error) {
 		return b.buf, err
 	}
 	return b.buf[:n], nil
+}
+
+func (b *bufferedConn) prefetch(max int, timeout time.Duration) []byte {
+	if len(b.buf) >= 12 {
+		return b.buf
+	}
+	_ = b.Conn.SetReadDeadline(time.Now().Add(timeout))
+	tmp := make([]byte, max)
+	n, _ := b.Conn.Read(tmp)
+	_ = b.Conn.SetReadDeadline(time.Time{})
+	if n > 0 {
+		b.buf = append(b.buf, tmp[:n]...)
+	}
+	return b.buf
+}
+
+func (b *bufferedConn) prefetchRequest(max int, timeout time.Duration) []byte {
+	_ = b.Conn.SetReadDeadline(time.Now().Add(timeout))
+	defer b.Conn.SetReadDeadline(time.Time{})
+
+	for len(b.buf) < max {
+		if strings.Contains(string(b.buf), "\r\n\r\n") {
+			break
+		}
+		tmp := make([]byte, 2048)
+		n, err := b.Conn.Read(tmp)
+		if n > 0 {
+			b.buf = append(b.buf, tmp[:n]...)
+		}
+		if err != nil || n == 0 {
+			break
+		}
+	}
+	return b.buf
+}
+
+func (b *bufferedConn) forget(n int) {
+	switch {
+	case n <= 0:
+		return
+	case n >= len(b.buf):
+		b.buf = nil
+	default:
+		b.buf = b.buf[n:]
+	}
 }
 
 func (b *bufferedConn) Read(p []byte) (int, error) {
@@ -381,6 +427,12 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 	sni := p.computeSNI(domain)
 	skipVerify := p.ignoreCertMismatch(domain)
 
+	cliBuf := newBufferedConn(clientTLS)
+	reqHead := cliBuf.prefetchRequest(8<<10, 2*time.Second)
+	if len(reqHead) == 0 || !strings.HasSuffix(string(reqHead), "\r\n\r\n") {
+		reqHead = nil
+	}
+
 	deadline := time.Now().Add(budget)
 	var dialErrs []string
 
@@ -427,8 +479,31 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 				continue
 			}
 
+			if reqHead != nil {
+				if _, werr := upstreamTLS.Write(reqHead); werr != nil {
+					p.recordDial(domain, ip, 0, werr)
+					dialErrs = append(dialErrs, fmt.Sprintf("%s: 发送请求失败: %v", ip, werr))
+					upstreamTLS.Close()
+					continue
+				}
+			}
+
+			bufUp := newBufferedConn(upstreamTLS)
+			var head []byte
+			if reqHead != nil {
+				head = bufUp.prefetch(2048, relayFirstByte)
+			}
+			if bad, why := badResponse(domain, head); bad {
+				p.recordDial(domain, ip, 0, errors.New(why))
+				dialErrs = append(dialErrs, ip+": "+why)
+				logThrottled("bad-upstream-"+domain, "%s:%s 上游 %s %s, 换下一个", domain, portStr, ip, why)
+				upstreamTLS.Close()
+				continue
+			}
+
 			p.recordDial(domain, ip, time.Since(start), nil)
-			res := relay(clientTLS, upstreamTLS, relayIdle, nil)
+			cliBuf.forget(len(reqHead))
+			res := relay(cliBuf, bufUp, relayIdle, nil)
 			upstreamTLS.Close()
 			if res.recv > 0 || res.sent > 0 {
 				if res.recv == 0 {
@@ -1034,6 +1109,45 @@ func (p *Proxy) watchDomains() {
 	}
 }
 
+func badResponse(domain string, head []byte) (bool, string) {
+	if len(head) == 0 {
+		return false, ""
+	}
+
+	status := 0
+	lines := strings.Split(string(head), "\r\n")
+	if f := strings.Fields(lines[0]); len(f) >= 2 {
+		if n, err := strconv.Atoi(f[1]); err == nil {
+			status = n
+		}
+	}
+
+	lower := strings.ToLower(string(head))
+	if strings.Contains(lower, "microsoft-iis") || strings.Contains(lower, "x-powered-by: asp.net") {
+		return true, "命中 Azure 默认站点"
+	}
+
+	if status < 300 || status >= 400 {
+		return false, ""
+	}
+
+	for _, l := range lines[1:] {
+		if len(l) < 9 || !strings.EqualFold(l[:9], "location:") {
+			continue
+		}
+		u, err := url.Parse(strings.TrimSpace(l[9:]))
+		if err != nil || u.Host == "" {
+			return false, ""
+		}
+		host := strings.ToLower(u.Hostname())
+		if host == "github.com" && !strings.EqualFold(domain, "github.com") {
+			return true, "被跳转到 " + host
+		}
+		return false, ""
+	}
+	return false, ""
+}
+
 func checkPeer(raw net.Conn, domain, sni string, skipVerify bool, timeout time.Duration, httpCheck bool) error {
 	_ = raw.SetDeadline(time.Now().Add(timeout))
 
@@ -1055,12 +1169,19 @@ func checkPeer(raw net.Conn, domain, sni string, skipVerify bool, timeout time.D
 	if _, err := io.WriteString(tc, req); err != nil {
 		return err
 	}
-	buf := make([]byte, 5)
-	if _, err := io.ReadFull(tc, buf); err != nil {
-		return err
+	buf := make([]byte, 2048)
+	n, err := tc.Read(buf)
+	if n == 0 {
+		if err != nil {
+			return err
+		}
+		return errors.New("空响应")
 	}
-	if string(buf) != "HTTP/" {
-		return fmt.Errorf("非 HTTP 响应: %q", buf)
+	if n < 5 || string(buf[:5]) != "HTTP/" {
+		return fmt.Errorf("非 HTTP 响应: %q", buf[:n])
+	}
+	if bad, why := badResponse(domain, buf[:n]); bad {
+		return fmt.Errorf("响应不属于本站点: %s", why)
 	}
 	return nil
 }
