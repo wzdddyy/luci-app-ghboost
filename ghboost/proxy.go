@@ -1123,7 +1123,8 @@ func badResponse(domain string, head []byte) (bool, string) {
 	}
 
 	lower := strings.ToLower(string(head))
-	if strings.Contains(lower, "microsoft-iis") || strings.Contains(lower, "x-powered-by: asp.net") {
+	if strings.Contains(lower, "microsoft-iis") || strings.Contains(lower, "x-powered-by: asp.net") ||
+		strings.Contains(lower, "web site not found") {
 		return true, "命中 Azure 默认站点"
 	}
 
