@@ -34,6 +34,9 @@ const (
 
 	probeTimeout  = 3 * time.Second
 	probeCooldown = 3 * time.Minute
+	probeWait     = 400 * time.Millisecond
+
+	handshakeTimeout = 3 * time.Second
 
 	dialFastBudget = 4 * time.Second
 
@@ -312,7 +315,7 @@ func (p *Proxy) handleConn(client *net.TCPConn) {
 		budget = dialFastBudget
 		logThrottled("probe-dead-"+domain,
 			"%s:%d 探测 %v 内没有候选建连成功, 重试预算缩短到 %v",
-			domain, port, probeTimeout, budget)
+			domain, port, probeWait, budget)
 	}
 
 	ordered := p.order(domain, ips)
@@ -470,12 +473,24 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 				continue
 			}
 
+			hsBudget := handshakeTimeout
+			if rem := time.Until(deadline); rem < hsBudget {
+				hsBudget = rem
+			}
+			if hsBudget <= 0 {
+				raw.Close()
+				break
+			}
+			_ = raw.SetDeadline(time.Now().Add(hsBudget))
+
 			upstreamTLS := tls.Client(raw, &tls.Config{
 				ServerName:         sni,
 				InsecureSkipVerify: skipVerify,
 				MinVersion:         tls.VersionTLS12,
 			})
-			if herr := upstreamTLS.Handshake(); herr != nil {
+			herr := upstreamTLS.Handshake()
+			_ = raw.SetDeadline(time.Time{})
+			if herr != nil {
 				p.recordDial(domain, ip, time.Since(start), herr)
 				dialErrs = append(dialErrs, fmt.Sprintf("%s: tls %v", ip, herr))
 				raw.Close()
@@ -826,7 +841,7 @@ func (p *Proxy) probeUntested(domain string, ips []string, port string) (probed 
 	select {
 	case <-hit:
 		return true, true
-	case <-time.After(probeTimeout):
+	case <-time.After(probeWait):
 		return true, false
 	}
 }
