@@ -421,6 +421,9 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 
 	clientTLS := tls.Server(client, serverTLS)
 	if err := clientTLS.Handshake(); err != nil {
+		if err == io.EOF || strings.Contains(err.Error(), "reset by peer") {
+			return
+		}
 		bumpStat(false)
 		logThrottled("client-hs-"+domain, "客户端 TLS 握手失败 %s: %v", client.RemoteAddr(), err)
 		return
