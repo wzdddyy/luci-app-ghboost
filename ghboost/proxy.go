@@ -428,13 +428,12 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 	skipVerify := p.ignoreCertMismatch(domain)
 
 	cliBuf := newBufferedConn(clientTLS)
-	reqHead := cliBuf.prefetchRequest(8<<10, 2*time.Second)
-	if len(reqHead) == 0 || !strings.HasSuffix(string(reqHead), "\r\n\r\n") {
-		reqHead = nil
-	}
-	reqPath := "/"
-	if reqHead != nil {
-		reqPath = requestPath(reqHead)
+	var reqHead []byte
+	if strings.EqualFold(domain, "api.github.com") {
+		reqHead = cliBuf.prefetchRequest(8<<10, 2*time.Second)
+		if len(reqHead) == 0 || !strings.HasSuffix(string(reqHead), "\r\n\r\n") {
+			reqHead = nil
+		}
 	}
 
 	deadline := time.Now().Add(budget)
@@ -497,7 +496,7 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 			if reqHead != nil {
 				head = bufUp.prefetch(2048, relayFirstByte)
 			}
-			if bad, why := badResponse(domain, reqPath, head); bad {
+			if bad, why := badResponse(domain, head); bad {
 				p.recordDial(domain, ip, 0, errors.New(why))
 				dialErrs = append(dialErrs, ip+": "+why)
 				logThrottled("bad-upstream-"+domain, "%s:%s 上游 %s %s, 换下一个", domain, portStr, ip, why)
@@ -1113,24 +1112,7 @@ func (p *Proxy) watchDomains() {
 	}
 }
 
-func requestPath(head []byte) string {
-	s := string(head)
-	line := s
-	if i := strings.IndexByte(s, '\r'); i > 0 {
-		line = s[:i]
-	}
-	parts := strings.SplitN(line, " ", 3)
-	if len(parts) < 2 {
-		return "/"
-	}
-	p := parts[1]
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		p = p[:i]
-	}
-	return p
-}
-
-func badResponse(domain, reqPath string, head []byte) (bool, string) {
+func badResponse(domain string, head []byte) (bool, string) {
 	if len(head) == 0 {
 		return false, ""
 	}
@@ -1149,7 +1131,7 @@ func badResponse(domain, reqPath string, head []byte) (bool, string) {
 		return true, "命中 Azure 默认站点"
 	}
 
-	if status < 300 || status >= 400 {
+	if status < 300 || status >= 400 || !strings.EqualFold(domain, "api.github.com") {
 		return false, ""
 	}
 
@@ -1162,8 +1144,7 @@ func badResponse(domain, reqPath string, head []byte) (bool, string) {
 			return false, ""
 		}
 		host := strings.ToLower(u.Hostname())
-		if host == "github.com" && !strings.EqualFold(domain, "github.com") &&
-			reqPath != "/" && u.Path == reqPath {
+		if host == "github.com" {
 			return true, "被跳转到 " + host
 		}
 		return false, ""
@@ -1203,7 +1184,7 @@ func checkPeer(raw net.Conn, domain, sni string, skipVerify bool, timeout time.D
 	if n < 5 || string(buf[:5]) != "HTTP/" {
 		return fmt.Errorf("非 HTTP 响应: %q", buf[:n])
 	}
-	if bad, why := badResponse(domain, "/", buf[:n]); bad {
+	if bad, why := badResponse(domain, buf[:n]); bad {
 		return fmt.Errorf("响应不属于本站点: %s", why)
 	}
 	return nil
