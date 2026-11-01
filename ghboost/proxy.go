@@ -706,8 +706,7 @@ type idleReader struct {
 	conn      net.Conn
 	idle      time.Duration
 	firstByte time.Duration
-	peerSent  *atomic.Int64
-	got       bool
+	awaiting  *atomic.Bool
 	lastErr   error
 	deadline  time.Time
 }
@@ -716,7 +715,7 @@ const deadlineSlack = 5 * time.Second
 
 func (r *idleReader) Read(b []byte) (int, error) {
 	d := r.idle
-	if r.firstByte > 0 && r.peerSent != nil && !r.got && r.peerSent.Load() > 0 {
+	if r.firstByte > 0 && r.awaiting != nil && r.awaiting.Load() {
 		d = r.firstByte
 	}
 	now := time.Now()
@@ -725,13 +724,24 @@ func (r *idleReader) Read(b []byte) (int, error) {
 		_ = r.conn.SetReadDeadline(r.deadline)
 	}
 	n, err := r.conn.Read(b)
-	if n > 0 {
-		r.got = true
+	if n > 0 && r.awaiting != nil {
+		r.awaiting.Store(false)
 	}
 	if err != nil && err != io.EOF {
 		r.lastErr = err
 	}
 	return n, err
+}
+
+var httpMethods = []string{"GET ", "POST ", "HEAD ", "PUT ", "DELETE ", "OPTIONS ", "PATCH "}
+
+func looksLikeRequest(b []byte) bool {
+	for _, m := range httpMethods {
+		if len(b) >= len(m) && string(b[:len(m)]) == m {
+			return true
+		}
+	}
+	return false
 }
 
 func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayResult {
@@ -747,20 +757,38 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayRe
 	}
 
 	var sent, recv atomic.Int64
-	var answered atomic.Bool
+	var answered, awaiting atomic.Bool
 	done := make(chan int, 2)
 	up := &replayReader{r: &idleReader{conn: client, idle: idle}, answered: &answered}
-	downReader := &idleReader{conn: upstream, idle: idle, firstByte: relayFirstByte, peerSent: &sent}
+	downReader := &idleReader{conn: upstream, idle: idle, firstByte: relayFirstByte, awaiting: &awaiting}
 
 	if len(replay) > 0 {
 		if n, err := upstream.Write(replay); err == nil {
 			sent.Add(int64(n))
+			if looksLikeRequest(replay) {
+				awaiting.Store(true)
+			}
 		}
 	}
 
 	go func() {
-		n, _ := io.Copy(upstream, up)
-		sent.Add(n)
+		buf := make([]byte, 32<<10)
+		for {
+			n, rerr := up.Read(buf)
+			if n > 0 {
+				if looksLikeRequest(buf[:n]) {
+					awaiting.Store(true)
+				}
+				if _, werr := upstream.Write(buf[:n]); werr != nil {
+					sent.Add(int64(n))
+					break
+				}
+				sent.Add(int64(n))
+			}
+			if rerr != nil {
+				break
+			}
+		}
 		closeWrite(upstream)
 		done <- dirUp
 	}()
@@ -785,7 +813,7 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayRe
 		}
 		<-done
 		_ = client.SetReadDeadline(time.Time{})
-	} else if recv.Load() == 0 {
+	} else if first == dirDown || recv.Load() == 0 {
 		_ = client.SetReadDeadline(time.Now())
 		<-done
 		_ = client.SetReadDeadline(time.Time{})
