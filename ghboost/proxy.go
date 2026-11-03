@@ -23,9 +23,11 @@ const (
 	dialBudget = 20 * time.Second
 	dialPause  = 300 * time.Millisecond
 
-	relayIdle = 300 * time.Second
+	relayIdle      = 300 * time.Second
 	relayFirstByte = 1500 * time.Millisecond
-	failPenalty = 1 * time.Minute
+	failPenalty    = 1 * time.Minute
+
+	requestWaitTimeout = 3 * time.Second
 
 	warmupProbeCount = 8
 	warmupPort       = "443"
@@ -370,7 +372,7 @@ func (p *Proxy) handlePlain(client net.Conn, domain string, ordered []string, po
 				continue
 			}
 
-			res := relay(client, conn, relayIdle, replay)
+			res := relay(client, conn, relayIdle, replay, false)
 			conn.Close()
 			if res.recv > 0 {
 				if res.aborted {
@@ -390,6 +392,9 @@ func (p *Proxy) handlePlain(client net.Conn, domain string, ordered []string, po
 					replay = append(replay, add...)
 				}
 				continue
+			}
+			if res.clientGone {
+				return
 			}
 
 			p.recordDial(domain, ip, 0, errors.New("建立后立刻断开"))
@@ -434,13 +439,12 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 	skipVerify := p.ignoreCertMismatch(domain)
 
 	cliBuf := newBufferedConn(clientTLS)
-	var reqHead []byte
-	if strings.EqualFold(domain, "api.github.com") {
-		reqHead = cliBuf.prefetchRequest(8<<10, 2*time.Second)
-		if len(reqHead) == 0 || !strings.HasSuffix(string(reqHead), "\r\n\r\n") {
-			reqHead = nil
-		}
+	reqHead := cliBuf.prefetchRequest(8<<10, requestWaitTimeout)
+	if len(reqHead) == 0 {
+		return
 	}
+	cliBuf.forget(len(reqHead))
+	needBadCheck := strings.EqualFold(domain, "api.github.com")
 
 	deadline := time.Now().Add(budget)
 	var dialErrs []string
@@ -500,42 +504,43 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 				continue
 			}
 
-			if reqHead != nil {
-				if _, werr := upstreamTLS.Write(reqHead); werr != nil {
-					p.recordDial(domain, ip, 0, werr)
-					dialErrs = append(dialErrs, fmt.Sprintf("%s: 发送请求失败: %v", ip, werr))
+			if _, werr := upstreamTLS.Write(reqHead); werr != nil {
+				p.recordDial(domain, ip, 0, werr)
+				dialErrs = append(dialErrs, fmt.Sprintf("%s: 发送请求失败: %v", ip, werr))
+				upstreamTLS.Close()
+				continue
+			}
+
+			bufUp := newBufferedConn(upstreamTLS)
+			if needBadCheck {
+				head := bufUp.prefetch(2048, relayFirstByte)
+				if bad, why := badResponse(domain, head); bad {
+					p.recordDial(domain, ip, 0, errors.New(why))
+					dialErrs = append(dialErrs, ip+": "+why)
+					logThrottled("bad-upstream-"+domain, "%s:%s 上游 %s %s, 换下一个", domain, portStr, ip, why)
 					upstreamTLS.Close()
 					continue
 				}
 			}
 
-			bufUp := newBufferedConn(upstreamTLS)
-			var head []byte
-			if reqHead != nil {
-				head = bufUp.prefetch(2048, relayFirstByte)
-			}
-			if bad, why := badResponse(domain, head); bad {
-				p.recordDial(domain, ip, 0, errors.New(why))
-				dialErrs = append(dialErrs, ip+": "+why)
-				logThrottled("bad-upstream-"+domain, "%s:%s 上游 %s %s, 换下一个", domain, portStr, ip, why)
-				upstreamTLS.Close()
-				continue
-			}
-
-			p.recordDial(domain, ip, time.Since(start), nil)
-			cliBuf.forget(len(reqHead))
-			res := relay(cliBuf, bufUp, relayIdle, nil)
+			setup := time.Since(start)
+			res := relay(cliBuf, bufUp, relayIdle, nil, true)
 			upstreamTLS.Close()
-			if res.recv > 0 || res.sent > 0 {
-				if res.recv == 0 {
-					p.recordDial(domain, ip, 0, errors.New("首字节超时(服务器无响应)"))
-				} else if res.aborted {
+
+			if res.recv > 0 {
+				p.recordDial(domain, ip, setup, nil)
+				if res.aborted {
 					p.recordDial(domain, ip, 0, errors.New("连接中途被断开"))
 				}
 				bumpStat(true)
 				return
 			}
-			dialErrs = append(dialErrs, ip+": 建立后立刻断开")
+			if res.clientGone {
+				return
+			}
+
+			p.recordDial(domain, ip, 0, errors.New("请求已发出但无响应"))
+			dialErrs = append(dialErrs, ip+": 请求已发出但无响应")
 		}
 	}
 
@@ -665,10 +670,32 @@ func (p *Proxy) expandCandidates(domain, port string, tried []string) {
 const replayMax = 64 << 10
 
 type relayResult struct {
-	sent    int64
-	recv    int64
-	replay  []byte
-	aborted bool
+	sent       int64
+	recv       int64
+	replay     []byte
+	aborted    bool
+	clientGone bool
+}
+
+type trackedWriter struct {
+	w      io.Writer
+	failed atomic.Bool
+}
+
+func (t *trackedWriter) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if err != nil {
+		t.failed.Store(true)
+	}
+	return n, err
+}
+
+func connEnded(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return false
+	}
+	return true
 }
 
 type replayReader struct {
@@ -747,7 +774,7 @@ func looksLikeRequest(b []byte) bool {
 	return false
 }
 
-func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayResult {
+func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitingReply bool) relayResult {
 	const (
 		dirUp   = 1 
 		dirDown = 2 
@@ -760,11 +787,14 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayRe
 	}
 
 	var sent, recv atomic.Int64
-	var answered, awaiting atomic.Bool
+	var answered, awaiting, clientGone atomic.Bool
 	done := make(chan int, 2)
 	up := &replayReader{r: &idleReader{conn: client, idle: idle}, answered: &answered}
 	downReader := &idleReader{conn: upstream, idle: idle, firstByte: relayFirstByte, awaiting: &awaiting}
 
+	if awaitingReply {
+		awaiting.Store(true)
+	}
 	if len(replay) > 0 {
 		if n, err := upstream.Write(replay); err == nil {
 			sent.Add(int64(n))
@@ -789,6 +819,9 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayRe
 				sent.Add(int64(n))
 			}
 			if rerr != nil {
+				if sent.Load() == 0 && connEnded(rerr) {
+					clientGone.Store(true)
+				}
 				break
 			}
 		}
@@ -796,10 +829,14 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayRe
 		done <- dirUp
 	}()
 	go func() {
-		n, _ := io.Copy(client, downReader)
+		cw := &trackedWriter{w: client}
+		n, _ := io.Copy(cw, downReader)
 		recv.Add(n)
 		if n > 0 {
 			answered.Store(true)
+		}
+		if cw.failed.Load() {
+			clientGone.Store(true)
 		}
 		if n > 0 {
 			closeWrite(client)
@@ -824,7 +861,7 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte) relayRe
 		<-done
 	}
 
-	res := relayResult{sent: sent.Load(), recv: recv.Load()}
+	res := relayResult{sent: sent.Load(), recv: recv.Load(), clientGone: clientGone.Load()}
 	if res.recv == 0 {
 		res.replay = up.snapshot()
 	}
