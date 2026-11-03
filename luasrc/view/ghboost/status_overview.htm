@@ -106,6 +106,12 @@
         return { rank: 0, tag: "正常", cls: "gh-ok", lat: ms + " ms" };
     }
 
+    function sortTier(h) {
+        if (plainMap[h.domain]) { return 2; }
+        if (h.best) { return 0; }
+        return 1;
+    }
+
     var expanded = false;
     var lastHosts = [];
     var plainMap = {};
@@ -120,8 +126,10 @@
             var info = hostInfo(h);
             return { h: h, info: info };
         }).sort(function(a, b) {
-            if (a.info.rank !== b.info.rank) { return b.info.rank - a.info.rank; }
-            return (a.h.best_ms || 0) - (b.h.best_ms || 0);
+            var ta = sortTier(a.h), tb = sortTier(b.h);
+            if (ta !== tb) { return ta - tb; }
+            if (ta === 0) { return (a.h.best_ms || 0) - (b.h.best_ms || 0); }
+            return 0;
         });
 
         if (!items.length) {
