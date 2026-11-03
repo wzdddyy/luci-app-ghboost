@@ -95,7 +95,7 @@ func (p *Proxy) snapshot() StatusSnapshot {
 			}
 			h.OK += st.okCnt
 			h.Fail += st.failCnt
-			if st.rtt > 0 && st.failAt.After(st.rttAt) {
+			if st.rtt > 0 && st.failAt.After(st.rttAt) && now.Sub(st.failAt) < failPenalty {
 				continue
 			}
 			if st.rtt > 0 && (h.Best == "" || st.rtt.Milliseconds() < bestMs) {
