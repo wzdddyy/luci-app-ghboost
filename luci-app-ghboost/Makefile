@@ -13,3 +13,5 @@ LUCI_DEPENDS:=+luci-base +luci-compat
 LUCI_DESCRIPTION:=Web UI for GitHub access optimization (ghboost): start/stop, status dashboard (per-host IP/latency), self-diagnose, editable domain table, log viewer.
 
 include $(TOPDIR)/feeds/luci/luci.mk
+
+# call BuildPackage - OpenWrt buildroot signature
