@@ -12,58 +12,8 @@ permissions:
   contents: write
 
 jobs:
-  build-bin:
-    name: ghboost binary (${{ matrix.tag }})
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - tag: arm64
-            goarch: arm64
-          - tag: amd64
-            goarch: amd64
-          - tag: armv7
-            goarch: arm
-            goarm: "7"
-          - tag: armv6
-            goarch: arm
-            goarm: "6"
-    steps:
-      - uses: actions/checkout@v5
-        with: { path: src }
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.27'
-          cache-dependency-path: src/ghboost/go.mod
-
-      - name: Build
-        working-directory: src/ghboost
-        env:
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
-        run: |
-          set -euo pipefail
-          VER=$(grep -m1 '^PKG_VERSION:=' ../Makefile | cut -d= -f2 | tr -d ' ')
-          echo "version=$VER"
-          [ -z "${{ matrix.goarm }}" ] || export GOARM="${{ matrix.goarm }}"
-          echo "GOOS=$GOOS GOARCH=$GOARCH GOARM=${GOARM:-默认}"
-          go build -trimpath -buildvcs=false \
-            -ldflags="-s -w -extldflags=-static -X main.version=$VER -X main.statusVersion=$VER" \
-            -o "../ghboost-linux-${{ matrix.tag }}" .
-          file "../ghboost-linux-${{ matrix.tag }}"
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: bin-${{ matrix.tag }}
-          path: src/ghboost-linux-${{ matrix.tag }}
-          if-no-files-found: error
-
   build-core:
     name: core ${{ matrix.label }}
-    needs: build-bin
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -77,7 +27,6 @@ jobs:
             gcc: "14.3.0"
             target: mediatek
             subtarget: filogic
-            goarch: arm64
             pkgarch: aarch64_cortex-a53
             ext: apk
 
@@ -88,7 +37,6 @@ jobs:
             gcc: "13.3.0"
             target: mediatek
             subtarget: filogic
-            goarch: arm64
             pkgarch: aarch64_cortex-a53
             ext: ipk
 
@@ -99,7 +47,6 @@ jobs:
             gcc: "14.3.0"
             target: x86
             subtarget: "64"
-            goarch: amd64
             pkgarch: x86_64
             ext: apk
 
@@ -110,7 +57,6 @@ jobs:
             gcc: "13.3.0"
             target: x86
             subtarget: "64"
-            goarch: amd64
             pkgarch: x86_64
             ext: ipk
 
@@ -121,7 +67,6 @@ jobs:
             gcc: "14.3.0"
             target: bcm27xx
             subtarget: bcm2711
-            goarch: arm64
             pkgarch: aarch64_cortex-a72
             ext: apk
 
@@ -132,7 +77,6 @@ jobs:
             gcc: "13.3.0"
             target: bcm27xx
             subtarget: bcm2711
-            goarch: arm64
             pkgarch: aarch64_cortex-a72
             ext: ipk
 
@@ -143,7 +87,6 @@ jobs:
             gcc: "14.3.0"
             target: armsr
             subtarget: armv8
-            goarch: arm64
             pkgarch: aarch64_generic
             ext: apk
 
@@ -154,7 +97,6 @@ jobs:
             gcc: "13.3.0"
             target: armsr
             subtarget: armv8
-            goarch: arm64
             pkgarch: aarch64_generic
             ext: ipk
 
@@ -165,7 +107,6 @@ jobs:
             gcc: "14.3.0"
             target: ipq40xx
             subtarget: generic
-            goarch: arm
             pkgarch: arm_cortex-a7_neon-vfpv4
             ext: apk
 
@@ -176,7 +117,6 @@ jobs:
             gcc: "13.3.0"
             target: ipq40xx
             subtarget: generic
-            goarch: arm
             pkgarch: arm_cortex-a7_neon-vfpv4
             ext: ipk
 
@@ -187,7 +127,6 @@ jobs:
             gcc: "14.3.0"
             target: bcm53xx
             subtarget: generic
-            goarch: arm
             pkgarch: arm_cortex-a9
             ext: apk
 
@@ -198,7 +137,6 @@ jobs:
             gcc: "13.3.0"
             target: bcm53xx
             subtarget: generic
-            goarch: arm
             pkgarch: arm_cortex-a9
             ext: ipk
 
@@ -209,7 +147,6 @@ jobs:
             gcc: "14.3.0"
             target: imx
             subtarget: cortexa9
-            goarch: arm
             pkgarch: arm_cortex-a9_neon
             ext: apk
 
@@ -220,7 +157,6 @@ jobs:
             gcc: "13.3.0"
             target: imx
             subtarget: cortexa9
-            goarch: arm
             pkgarch: arm_cortex-a9_neon
             ext: ipk
 
@@ -249,26 +185,6 @@ jobs:
             echo "runner 已自带全部构建依赖, 跳过 apt"
           fi
 
-      - name: Resolve Go binary tag
-        id: resolve
-        run: |
-          set -euo pipefail
-          case "${{ matrix.pkgarch }}" in
-            arm_cortex-a9) bin=armv6 ;;
-            arm_cortex-a7_neon-vfpv4|arm_cortex-a9_neon) bin=armv7 ;;
-            x86_64) bin=amd64 ;;
-            aarch64*) bin=arm64 ;;
-            *) echo "ERROR: 未知架构 ${{ matrix.pkgarch }}" >&2; exit 1 ;;
-          esac
-          echo "bin=$bin" >> "$GITHUB_OUTPUT"
-          echo "选用 Go 二进制: $bin"
-
-      - name: Fetch Go binary
-        uses: actions/download-artifact@v7
-        with:
-          name: bin-${{ steps.resolve.outputs.bin }}
-          path: src/files/usr/bin
-
       - name: Cache SDK tarball
         uses: actions/cache@v5
         with:
@@ -279,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           abi=""
-          if [ "${{ matrix.goarch }}" = "arm" ]; then
+          if [ "${{ matrix.target }}" = "ipq40xx" ] || [ "${{ matrix.target }}" = "bcm53xx" ] || [ "${{ matrix.target }}" = "imx" ]; then
             abi="_eabi"
           fi
           sdk="openwrt-sdk-${{ matrix.openwrt }}-${{ matrix.sdkfile }}_gcc-${{ matrix.gcc }}_musl${abi}.Linux-x86_64.tar.zst"
@@ -296,14 +212,10 @@ jobs:
       - name: Stage package
         run: |
           set -euo pipefail
-          mv "src/files/usr/bin/ghboost-linux-${{ steps.resolve.outputs.bin }}" src/files/usr/bin/ghboost
-          chmod +x src/files/usr/bin/ghboost
-          file src/files/usr/bin/ghboost
-
-          mkdir -p sdk/package/luci-app-ghboost
+          mkdir -p sdk/package/ghboost
           rsync -a \
-            --exclude '/.git/' --exclude '/.github/' --exclude '/ghboost/' \
-            src/ sdk/package/luci-app-ghboost/
+            --exclude '/.git/' --exclude '/.github/' \
+            src/ghboost/ sdk/package/ghboost/
 
       - name: Build package
         working-directory: sdk
@@ -314,7 +226,8 @@ jobs:
         run: |
           set -euo pipefail
           [ -f feeds.conf ] || cp feeds.conf.default feeds.conf
-          ./scripts/feeds update luci
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
           {
             echo "CONFIG_TARGET_${TARGET}=y"
@@ -337,7 +250,7 @@ jobs:
             exit 1
           }
 
-          if ! make package/luci-app-ghboost/compile V=s -j"$(nproc)" 2>&1 | tee /tmp/build.log; then
+          if ! make package/ghboost/compile V=s -j"$(nproc)" 2>&1 | tee /tmp/build.log; then
             echo "::error::make 失败, 下面是日志里的关键行"
             grep -nE 'Error [0-9]|error:|fatal error|\*\*\* |No targets|No such file|ERROR:' /tmp/build.log | tail -80 || true
             exit 1
@@ -389,7 +302,6 @@ jobs:
 
   build-luci:
     name: luci ${{ matrix.label }}
-    needs: build-bin
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -443,12 +355,6 @@ jobs:
           path: ~/sdk-cache
           key: sdk-${{ matrix.openwrt }}-${{ matrix.sdkfile }}-gcc${{ matrix.gcc }}
 
-      - name: Fetch placeholder binary
-        uses: actions/download-artifact@v7
-        with:
-          name: bin-amd64
-          path: src/files/usr/bin
-
       - name: Download SDK ${{ matrix.openwrt }}
         run: |
           set -euo pipefail
@@ -466,13 +372,10 @@ jobs:
       - name: Stage package
         run: |
           set -euo pipefail
-          mv src/files/usr/bin/ghboost-linux-amd64 src/files/usr/bin/ghboost
-          chmod +x src/files/usr/bin/ghboost
-
           mkdir -p sdk/package/luci-app-ghboost
           rsync -a \
-            --exclude '/.git/' --exclude '/.github/' --exclude '/ghboost/' \
-            src/ sdk/package/luci-app-ghboost/
+            --exclude '/.git/' --exclude '/.github/' \
+            src/luci-app-ghboost/ sdk/package/luci-app-ghboost/
 
       - name: Build package
         working-directory: sdk
@@ -485,10 +388,9 @@ jobs:
           [ -f feeds.conf ] || cp feeds.conf.default feeds.conf
 
           echo "=== feeds 全量更新/安装 ==="
-          echo "lua 和 ucode 都在 base feed (package/feeds/base/)，只装 luci/packages 会缺它们，"
-          echo "进而导致 lucihttp 编译时 fatal error: lua.h / ucode/module.h"
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          rm -rf feeds/luci/applications/luci-app-ghboost package/feeds/luci/luci-app-ghboost
 
           {
             echo "CONFIG_TARGET_${TARGET}=y"
@@ -593,7 +495,7 @@ jobs:
 
   publish:
     name: publish latest
-    needs: [build-bin, build-core, build-luci]
+    needs: [build-core, build-luci]
     if: github.event.inputs.publish != 'false'
     runs-on: ubuntu-24.04
     steps:
@@ -620,15 +522,18 @@ jobs:
           TAG: latest
         run: |
           set -euo pipefail
-          ver=$(grep -m1 '^PKG_VERSION:=' Makefile | cut -d= -f2 | tr -d ' ')
-          rel=$(grep -m1 '^PKG_RELEASE:=' Makefile | cut -d= -f2 | tr -d ' ')
+          ver_core=$(grep -m1 '^PKG_VERSION:=' ghboost/Makefile | cut -d= -f2 | tr -d ' ')
+          rel_core=$(grep -m1 '^PKG_RELEASE:=' ghboost/Makefile | cut -d= -f2 | tr -d ' ')
+          ver_ui=$(grep -m1 '^PKG_VERSION:=' luci-app-ghboost/Makefile | cut -d= -f2 | tr -d ' ')
+          rel_ui=$(grep -m1 '^PKG_RELEASE:=' luci-app-ghboost/Makefile | cut -d= -f2 | tr -d ' ')
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           archs="aarch64_cortex-a53 aarch64_cortex-a72 aarch64_generic arm_cortex-a7_neon-vfpv4 arm_cortex-a9 arm_cortex-a9_neon x86_64"
 
           {
             echo "**ghboost 核心包 + LuCI 界面包**，滚动发布：文件名固定，URL 永久有效。"
             echo ""
-            echo "- 版本: \`${ver}-r${rel}\`"
+            echo "- 核心版本: \`${ver_core}-r${rel_core}\`"
+            echo "- UI 版本: \`${ver_ui}-r${rel_ui}\`"
             echo "- 提交: \`${GITHUB_SHA::7}\`"
             echo "- 构建: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M %Z')"
             echo ""
@@ -673,4 +578,4 @@ jobs:
                  --title "ghboost (rolling)" --notes-file notes.md --latest=false
           gh release upload "$TAG" out/* -R "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" \
-            --title "ghboost ${ver}-r${rel}" --notes-file notes.md --latest=false
+            --title "ghboost ${ver_core}-r${rel_core}" --notes-file notes.md --latest=false

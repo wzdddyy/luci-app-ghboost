@@ -1,3 +1,3 @@
-module github.com/zzj/ghboost
+module github.com/wzdddyy/ghboost
 
-go 1.27
+go 1.23
