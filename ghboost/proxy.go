@@ -1343,13 +1343,7 @@ func (p *Proxy) probeSlice() {
 		return
 	}
 
-	start := time.Now()
-	probed := p.probeDomains(due)
-	if probed == 0 {
-		return
-	}
-	logInfo("分片复测: %d 个域名, 测速 %d 个 IP, 耗时 %v",
-		len(due), probed, time.Since(start).Round(time.Millisecond))
+	p.probeDomains(due)
 }
 
 func (p *Proxy) dueDomains(doms []string, limit int) []string {
