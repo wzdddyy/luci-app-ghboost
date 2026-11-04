@@ -29,10 +29,17 @@ const (
 
 	requestWaitTimeout = 3 * time.Second
 
-	warmupProbeCount = 8
-	warmupPort       = "443"
-	warmupConcurrency = 16
+	warmupProbeCount  = 8
+	warmupPort        = "443"
+	warmupConcurrency = 4
 	warmupSkipFail    = 10 * time.Minute
+
+	probeTick       = 5 * time.Minute
+	probeFreshAfter = 30 * time.Minute
+	probeFailAfter  = 10 * time.Minute
+	probeSlices     = 6
+
+	expandConcurrency = 16
 
 	probeTimeout  = 3 * time.Second
 	probeCooldown = 3 * time.Minute
@@ -609,7 +616,7 @@ func (p *Proxy) expandCandidates(domain, port string, tried []string) {
 		return
 	}
 
-	sem := make(chan struct{}, warmupConcurrency)
+	sem := make(chan struct{}, expandConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	found := make([]string, 0, 4)
@@ -1300,6 +1307,17 @@ func (p *Proxy) warmupLoop() {
 	case <-timer.C:
 		p.warmupOnce()
 	}
+
+	t := time.NewTicker(probeTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-t.C:
+			p.probeSlice()
+		}
+	}
 }
 
 func (p *Proxy) warmupOnce() {
@@ -1308,7 +1326,92 @@ func (p *Proxy) warmupOnce() {
 		return
 	}
 	start := time.Now()
+	probed := p.probeDomains(doms)
+	logInfo("预热完成: %d 个域名, 测速 %d 个候选 IP, 耗时 %v",
+		len(doms), probed, time.Since(start).Round(time.Millisecond))
+}
 
+func (p *Proxy) probeSlice() {
+	doms := p.domainList()
+	if len(doms) == 0 {
+		return
+	}
+
+	limit := (len(doms) + probeSlices - 1) / probeSlices
+	due := p.dueDomains(doms, limit)
+	if len(due) == 0 {
+		return
+	}
+
+	start := time.Now()
+	probed := p.probeDomains(due)
+	if probed == 0 {
+		return
+	}
+	logInfo("分片复测: %d 个域名, 测速 %d 个 IP, 耗时 %v",
+		len(due), probed, time.Since(start).Round(time.Millisecond))
+}
+
+func (p *Proxy) dueDomains(doms []string, limit int) []string {
+	type activity struct {
+		ok   time.Time
+		last time.Time
+	}
+
+	acts := make(map[string]activity, len(doms))
+	p.statMu.Lock()
+	for k, st := range p.stats {
+		idx := strings.IndexByte(k, '|')
+		if idx <= 0 {
+			continue
+		}
+		d := k[:idx]
+		a := acts[d]
+		if st.rttAt.After(a.ok) {
+			a.ok = st.rttAt
+		}
+		last := st.failAt
+		if st.rttAt.After(last) {
+			last = st.rttAt
+		}
+		if last.After(a.last) {
+			a.last = last
+		}
+		acts[d] = a
+	}
+	p.statMu.Unlock()
+
+	now := time.Now()
+	type item struct {
+		domain string
+		last   time.Time
+	}
+	items := make([]item, 0, len(doms))
+	for _, d := range doms {
+		a := acts[d]
+		if !a.ok.IsZero() {
+			if now.Sub(a.ok) < probeFreshAfter {
+				continue
+			}
+		} else if !a.last.IsZero() && now.Sub(a.last) < probeFailAfter {
+			continue
+		}
+		items = append(items, item{domain: d, last: a.last})
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].last.Before(items[j].last) })
+	if len(items) > limit {
+		items = items[:limit]
+	}
+
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.domain
+	}
+	return out
+}
+
+func (p *Proxy) probeDomains(doms []string) int64 {
 	var probed int64
 	sem := make(chan struct{}, warmupConcurrency)
 	var wg sync.WaitGroup
@@ -1316,19 +1419,19 @@ func (p *Proxy) warmupOnce() {
 	for _, d := range doms {
 		select {
 		case <-p.stopCh:
-			return
+			wg.Wait()
+			return atomic.LoadInt64(&probed)
 		default:
 		}
 
 		ips, err := p.resolver.Resolve(d)
 		if err != nil {
-			logThrottled("warm-"+d, "预热解析 %s 失败: %v", d, err)
+			logThrottled("warm-"+d, "复测解析 %s 失败: %v", d, err)
 			continue
 		}
 		ips = p.dropFakeIPs(p.withExtra(d, ips))
 		if len(ips) > 0 && !anyIPv4(ips) {
-			logThrottled("warm-v6-"+d,
-				"预热: %s 只解析到 IPv6 %s", d, ips[0])
+			logThrottled("warm-v6-"+d, "%s 只解析到 IPv6 %s", d, ips[0])
 		}
 		for i, ip := range ips {
 			if i >= warmupProbeCount {
@@ -1355,8 +1458,7 @@ func (p *Proxy) warmupOnce() {
 	wg.Wait()
 
 	p.saveBest()
-	logInfo("预热完成: %d 个域名, 测速 %d 个候选 IP, 耗时 %v",
-		len(doms), probed, time.Since(start).Round(time.Millisecond))
+	return atomic.LoadInt64(&probed)
 }
 
 func (p *Proxy) statOf(domain, ip string) *ipStat {
@@ -1514,15 +1616,13 @@ func bumpStat(ok bool) {
 func (p *Proxy) statsLoop() {
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
-	tick := 0
 	for {
 		select {
 		case <-p.stopCh:
 			return
 		case <-t.C:
-			tick++
 			ok, fail, total := connStats.recent(time.Now())
-			if fail > 0 || tick%30 == 0 {
+			if ok > 0 || fail > 0 {
 				logInfo("近 60 秒: 成功 %d 条, 失败 %d 条, 累计 %d 条", ok, fail, total)
 			}
 
