@@ -19,9 +19,9 @@
             </div>
         </div>
         <div class="gh-hero-meta">
-            <div><b id="gh-domains">--</b><span>域名映射</span></div>
-            <div><b id="gh-uptime">--</b><span>已运行</span></div>
-            <div><b id="gh-version">--</b><span>版本 核心/UI</span></div>
+            <div><span>域名映射</span><b id="gh-domains">--</b></div>
+            <div><span>已运行</span><b id="gh-uptime">--</b></div>
+            <div><span>版本 核心/UI</span><b id="gh-version">--</b></div>
         </div>
     </div>
 
@@ -142,7 +142,8 @@
 
         list.innerHTML = show.map(function(it) {
             var h = it.h, info = it.info;
-            var best = h.best ? esc(h.best) : (plainMap[h.domain] ? "—" : "无可用 IP");
+            var best = h.best ? esc(h.best)
+                : (plainMap[h.domain] ? "—" : (h.fail > 0 ? "无可用 IP" : "待测速"));
             return '<div class="gh-row">' +
                 '<div class="gh-row-dom"><b>' + esc(h.domain) + "</b>" +
                 "<span>虚拟 IP " + esc(h.fake_ip || "--") + "</span></div>" +
