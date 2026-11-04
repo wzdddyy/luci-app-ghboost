@@ -350,7 +350,6 @@ ensure_dhcp_force() {
 
 	uci -q set dhcp.lan.force='1'
 	uci -q commit dhcp
-	gl "已设置 LAN force=1 模式"
 }
 
 reload_dnsmasq() {
