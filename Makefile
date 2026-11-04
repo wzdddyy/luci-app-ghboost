@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ghboost
 PKG_VERSION:=1.2.5
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=wzdddyy
 PKG_LICENSE:=Apache-2.0
 
