@@ -32,6 +32,8 @@ function index()
 		call("act_toggle")).leaf = true
 	entry({"admin", "services", "ghboost", "log_api"},
 		call("act_log")).leaf = true
+	entry({"admin", "services", "ghboost", "log_clear"},
+		call("act_log_clear")).leaf = true
 	entry({"admin", "services", "ghboost", "ca_cert"},
 		call("act_ca_cert")).leaf = true
 end
@@ -291,6 +293,27 @@ function act_log()
 			"else logread -e ghboost 2>/dev/null | tail -n " .. n .. "; fi"
 	end
 	http.write(runCmd(cmd, 8))
+end
+
+function act_log_clear()
+	http.prepare_content("application/json")
+
+	local logPath = readRuntime().log
+	if not logPath or logPath == "" then
+		logPath = (luci.sys.exec("uci -q get ghboost.main.log_file 2>/dev/null"):gsub("%s+$", ""))
+	end
+
+	if not logPath or logPath == "" then
+		http.write_json({ ok = false, msg = "未配置日志文件路径，无法清空" })
+		return
+	end
+
+	local cmd = ": > " .. util.shellquote(logPath) ..
+		"; [ -f " .. util.shellquote(logPath .. ".1") .. " ] && : > " ..
+		util.shellquote(logPath .. ".1") .. " || true"
+	luci.sys.call(cmd)
+
+	http.write_json({ ok = true })
 end
 
 function act_ca_cert()
