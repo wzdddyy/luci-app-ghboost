@@ -8,12 +8,8 @@
             <span class="gh-log-label">自动刷新</span>
             <div class="gh-switch sm on" id="gh-log-auto" role="switch" tabindex="0"
                  aria-checked="true" aria-label="自动刷新"></div>
-            <select class="gh-select" id="gh-log-interval">
-                <option value="3000">3 秒</option>
-                <option value="5000">5 秒</option>
-                <option value="10000">10 秒</option>
-            </select>
             <button class="gh-btn" id="gh-log-download" type="button">下载</button>
+            <button class="gh-btn" id="gh-log-clear" type="button">删除日志</button>
         </div>
     </div>
 
@@ -32,7 +28,7 @@
     var base = "<%=luci.dispatcher.build_url()%>/admin/services/ghboost";
     var LIMIT = 300;
 
-    var body, pre, autoEl, intervalEl, stateEl, followEl;
+    var body, pre, autoEl, stateEl, followEl;
     var following = true;
     var timer = null;
     var lastText = "";
@@ -91,7 +87,7 @@
     function restartTimer() {
         if (timer) { clearInterval(timer); timer = null; }
         if (!autoEl.classList.contains("on")) { return; }
-        timer = setInterval(refresh, parseInt(intervalEl.value, 10) || 3000);
+        timer = setInterval(refresh, 3000);
     }
 
     function bindSwitch(el, onChange) {
@@ -122,7 +118,6 @@
         body = $("gh-log-body");
         pre = $("gh-log");
         autoEl = $("gh-log-auto");
-        intervalEl = $("gh-log-interval");
         stateEl = $("gh-log-state");
         followEl = $("gh-log-follow");
 
@@ -146,8 +141,6 @@
             setState(autoEl.classList.contains("on") ? "已开启自动刷新" : "已暂停刷新");
         });
 
-        intervalEl.addEventListener("change", restartTimer);
-
         $("gh-log-download").addEventListener("click", function() {
             var blob = new Blob([lastText || ""], { type: "text/plain;charset=utf-8" });
             var a = document.createElement("a");
@@ -159,6 +152,31 @@
                 URL.revokeObjectURL(a.href);
                 a.remove();
             }, 1000);
+        });
+
+        var clearBtn = $("gh-log-clear");
+        clearBtn.addEventListener("click", function() {
+            clearBtn.classList.add("busy");
+            setState("正在清空日志…");
+            fetch(base + "/log_clear?_=" + Date.now(),
+                { credentials: "same-origin", cache: "no-store" })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d && d.ok) {
+                        lastText = "";
+                        pre.innerHTML = '<span class="gh-muted">(日志为空)</span>';
+                        setState("日志已清空");
+                        if (autoEl.classList.contains("on")) { refresh(); }
+                    } else {
+                        setState("清空失败：" + ((d && d.msg) || "未知错误"));
+                    }
+                })
+                .catch(function(e) {
+                    setState("清空失败：" + e.message);
+                })
+                .then(function() {
+                    clearBtn.classList.remove("busy");
+                });
         });
 
         loadPath();
