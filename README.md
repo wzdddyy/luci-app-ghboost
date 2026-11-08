@@ -23,11 +23,14 @@ GitHub 访问优化插件。DNS 防污染解析 + 本地透明重定向 + 真实
 |---|---|
 | Windows | 管理员 PowerShell：`certutil -addstore -f Root C:\ghboost-ca.crt` |
 | macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/Downloads/ghboost-ca.crt` |
-| Linux | `sudo cp ghboost-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
+| Linux | `sudo cp ghboost-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`（仅对 curl/git 等命令行工具生效，浏览器需按下文单独导入） |
 | iOS | 设置 → 通用 → VPN与设备管理 → 安装，再到「证书信任设置」开启 |
 | Android | 设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书 |
 
-Firefox 用独立证书库，需在「设置 → 隐私与安全 → 证书 → 查看证书 → 证书机构」单独导入。
+Linux 下浏览器不读系统证书库，需导入独立的 NSS 证书库：
+
+- **Edge / Chrome**：`sudo apt install libnss3-tools && certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "ghboost CA" -i ghboost-ca.crt`，导入后彻底退出浏览器再打开
+- **Firefox**：先 `pkill firefox` 彻底关闭，再执行 `certutil -d sql:$HOME/.mozilla/firefox/*.default-release -A -t "C,," -n "ghboost CA" -i ghboost-ca.crt`；或在「设置 → 隐私与安全 → 证书 → 查看证书 → 证书机构」导入
 
 
 ## 常见问题
