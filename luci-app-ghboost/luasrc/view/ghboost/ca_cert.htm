@@ -43,11 +43,17 @@
         </div>
 
         <div class="gh-panel" data-panel="linux">
-            <p>把证书放到系统证书目录后刷新证书库。</p>
+            <p>系统证书库只对 curl、git 等命令行工具生效，浏览器不读取它，需单独导入（见下方命令）。</p>
             <div class="gh-code">
                 <code>sudo cp ~/Downloads/ghboost-ca.crt /usr/local/share/ca-certificates/ghboost-ca.crt &amp;&amp; sudo update-ca-certificates</code>
                 <button class="gh-btn gh-copy" type="button">复制</button>
             </div>
+            <p>Edge / Chrome 使用独立的 NSS 证书库，先安装 certutil 再导入，导入后完全退出浏览器再打开。</p>
+            <div class="gh-code">
+                <code>sudo apt install libnss3-tools &amp;&amp; certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "ghboost CA" -i ~/Downloads/ghboost-ca.crt</code>
+                <button class="gh-btn gh-copy" type="button">复制</button>
+            </div>
+            <div class="gh-note"><b>注意</b>：若提示数据库不存在，先执行 mkdir -p ~/.pki/nssdb &amp;&amp; certutil -d sql:$HOME/.pki/nssdb -N（提示设密码时直接回车留空），再执行上面的导入命令。</div>
         </div>
 
         <div class="gh-panel" data-panel="ios">
@@ -60,6 +66,12 @@
 
         <div class="gh-panel" data-panel="firefox">
             <p>Firefox 使用独立证书库，不读取系统证书：选项 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 → 导入，勾选信任该 CA。</p>
+            <p>也可在终端执行（需先 sudo apt install libnss3-tools；导入前必须彻底关闭 Firefox，否则数据库被锁会报错）：</p>
+            <div class="gh-code">
+                <code>pkill firefox; sleep 2; certutil -d sql:$HOME/.mozilla/firefox/*.default-release -A -t "C,," -n "ghboost CA" -i ~/Downloads/ghboost-ca.crt</code>
+                <button class="gh-btn gh-copy" type="button">复制</button>
+            </div>
+            <div class="gh-note"><b>注意</b>：若 Firefox 是 snap / flatpak 安装的，或导入仍报错，请改用上面的界面导入方式，效果相同。</div>
         </div>
     </div>
 </div>
