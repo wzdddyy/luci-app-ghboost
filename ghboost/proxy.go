@@ -32,11 +32,11 @@ const (
 	warmupProbeCount  = 8
 	warmupPort        = "443"
 	warmupConcurrency = 4
-	warmupSkipFail    = 10 * time.Minute
+	warmupSkipFail    = 5 * time.Minute
 
-	probeTick       = 5 * time.Minute
-	probeFreshAfter = 30 * time.Minute
-	probeFailAfter  = 10 * time.Minute
+	probeTick       = 150 * time.Second
+	probeFreshAfter = 15 * time.Minute
+	probeFailAfter  = 5 * time.Minute
 	probeSlices     = 6
 
 	expandConcurrency = 16
