@@ -48,7 +48,11 @@
     <div class="gh-card">
         <div class="gh-card-title">
             域名连接
-            <span class="gh-hint" id="gh-dom-hint">每 3 秒刷新</span>
+            <span class="gh-auto">
+                <span class="gh-hint">自动刷新</span>
+                <div class="gh-switch sm on" id="gh-dom-auto" role="switch" tabindex="0"
+                     aria-checked="true" aria-label="自动刷新"></div>
+            </span>
         </div>
         <div id="gh-dom-list"><div class="gh-empty">读取中…</div></div>
         <span class="gh-more" id="gh-more" style="display:none"></span>
@@ -241,9 +245,6 @@
         });
         $("gh-best").innerHTML = best ? best + " <small>ms</small>" : "--";
 
-        var hinted = $("gh-dom-hint");
-        hinted.textContent = d.running ? "每 3 秒刷新" : "服务未运行";
-
         if (d.running) {
             renderHosts(st.hosts || []);
         } else {
@@ -262,6 +263,28 @@
                 $("gh-hero-sub").textContent = "请刷新页面重试";
                 $("gh-dot").className = "gh-dot err";
             });
+    }
+
+    var timer = null;
+
+    function restartTimer() {
+        if (timer) { clearInterval(timer); timer = null; }
+        if (!$("gh-dom-auto").classList.contains("on")) { return; }
+        timer = setInterval(refresh, 3000);
+    }
+
+    function bindSwitch(el, onChange) {
+        el.addEventListener("click", function() {
+            el.classList.toggle("on");
+            el.setAttribute("aria-checked", el.classList.contains("on") ? "true" : "false");
+            onChange();
+        });
+        el.addEventListener("keydown", function(e) {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                el.click();
+            }
+        });
     }
 
     function toggleService() {
@@ -311,7 +334,12 @@
         renderHosts(lastHosts);
     });
 
+    bindSwitch($("gh-dom-auto"), function() {
+        restartTimer();
+        if ($("gh-dom-auto").classList.contains("on")) { refresh(); }
+    });
+
     refresh();
-    setInterval(refresh, 3000);
+    restartTimer();
 })();
 </script>
