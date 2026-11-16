@@ -25,6 +25,14 @@ CFG_STATE=/tmp/ghboost.cfg.state
 RUNTIME=/tmp/ghboost.runtime
 DNSCHECK_FILE=/tmp/ghboost.dnscheck
 
+TZ_NAME="$(uci -q get system.@system[0].zonename 2>/dev/null)"
+if [ -z "$TZ_NAME" ]; then
+	tz_off="$(sed -n 's/^[A-Za-z]*\([-+][0-9]\{1,2\}\)$/\1/p' /etc/TZ 2>/dev/null)"
+	[ -n "$tz_off" ] && TZ_NAME="Etc/GMT$tz_off"
+	unset tz_off
+fi
+[ -n "$TZ_NAME" ] && [ ! -f "/usr/share/zoneinfo/$TZ_NAME" ] && TZ_NAME=""
+
 ADDRS_CACHE=
 CFG_FP=
 AAAA_OK=
@@ -585,7 +593,7 @@ untrust_router_ca() {
 }
 
 trust_router_ca() {
-	local fp i=0
+	local key i=0
 
 	if [ ! -f "$CA_BUNDLE" ]; then
 		gl "WARN: 没有 $CA_BUNDLE (ca-bundle 未安装), 跳过路由器本机证书信任"
@@ -601,18 +609,18 @@ trust_router_ca() {
 		return 0
 	fi
 
-	fp="$(sha1sum "$CA_CERT" 2>/dev/null | awk '{print $1}')"
-	[ -n "$fp" ] || return 0
-	if grep -qx "$CA_MARK_BEGIN $fp" "$CA_BUNDLE" 2>/dev/null; then
+	key="$(awk 'length($0) > 40 && $0 !~ /-----/ { print; exit }' "$CA_CERT" 2>/dev/null | tr -d '\r ')"
+	[ -n "$key" ] || { gl "WARN: 读不出 $CA_CERT 的证书内容, 跳过路由器本机证书信任"; return 0; }
+	if grep -qF "$key" "$CA_BUNDLE" 2>/dev/null; then
 		return 0
 	fi
 
 	untrust_router_ca
-	if ! { printf '\n%s %s\n' "$CA_MARK_BEGIN" "$fp"; cat "$CA_CERT"; printf '%s\n' "$CA_MARK_END"; } >> "$CA_BUNDLE" 2>/dev/null; then
+	if ! { printf '\n%s\n' "$CA_MARK_BEGIN"; cat "$CA_CERT"; printf '%s\n' "$CA_MARK_END"; } >> "$CA_BUNDLE" 2>/dev/null; then
 		gl "WARN: 写入 $CA_BUNDLE 失败"
 		return 0
 	fi
-	gl "ghboost CA 已加入路由器信任库 $CA_BUNDLE (sha1=$fp)"
+	gl "ghboost CA 已加入路由器信任库 $CA_BUNDLE"
 }
 
 start_service() {
@@ -653,6 +661,9 @@ start_service() {
 		-stats-file "$STATS_FILE" \
 		-best-file "$BEST_FILE" \
 		-log-file "$LOG_FILE"
+	if [ -n "$TZ_NAME" ] && [ -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
+		procd_set_param env TZ="$TZ_NAME"
+	fi
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
