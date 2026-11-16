@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1190" height="560" viewBox="0 0 1190 560" font-family="'Microsoft YaHei','PingFang SC','Hiragino Sans GB','Source Han Sans SC',sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="mk"/>
+    </marker>
+    <marker id="arrowD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="mk-d"/>
+    </marker>
+    <marker id="arrowCA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="mk-ca"/>
+    </marker>
+    <style>
+      .bg      { fill: #ffffff; stroke: #d0d7de; }
+      .band    { fill: #f6f8fa; stroke: #8c959f; }
+      .t-band  { fill: #57606a; }
+      .t-title { fill: #1f2328; }
+      .t-sub   { fill: #57606a; }
+      .t-legend{ fill: #57606a; }
+      .ln      { stroke: #57606a; }
+      .ln-d    { stroke: #8c959f; }
+      .mk      { fill: #57606a; }
+      .mk-d    { fill: #8c959f; }
+      .badge   { fill: #57606a; }
+      .badge-t { fill: #ffffff; }
+
+      .b-client { fill: #dbeafe; stroke: #60a5fa; }
+      .b-dns    { fill: #dcfce7; stroke: #4ade80; }
+      .b-fw     { fill: #dcfce7; stroke: #4ade80; }
+      .b-core   { fill: #fef3c7; stroke: #f59e0b; }
+      .b-cache  { fill: #fef3c7; stroke: #f59e0b; }
+      .b-tls    { fill: #ede9fe; stroke: #a78bfa; }
+      .b-gh     { fill: #fee2e2; stroke: #f87171; }
+      .b-doh    { fill: #e0f2fe; stroke: #38bdf8; }
+      .b-ca     { fill: #f5f3ff; stroke: #8b5cf6; }
+
+      .t-accent   { fill: #2563eb; }
+      .t-accent2  { fill: #6d28d9; }
+      .ln-ca      { stroke: #8b5cf6; }
+      .mk-ca      { fill: #8b5cf6; }
+
+      @media (prefers-color-scheme: dark) {
+        .bg      { fill: #0d1117; stroke: #30363d; }
+        .band    { fill: #161b22; stroke: #484f58; }
+        .t-band  { fill: #8b949e; }
+        .t-title { fill: #e6edf3; }
+        .t-sub   { fill: #9da7b3; }
+        .t-legend{ fill: #8b949e; }
+        .ln      { stroke: #8b949e; }
+        .ln-d    { stroke: #6e7681; }
+        .mk      { fill: #8b949e; }
+        .mk-d    { fill: #6e7681; }
+        .badge   { fill: #30363d; }
+        .badge-t { fill: #e6edf3; }
+
+        .b-client { fill: #0f2438; stroke: #3b82f6; }
+        .b-dns    { fill: #0f2a1c; stroke: #22c55e; }
+        .b-fw     { fill: #0f2a1c; stroke: #22c55e; }
+        .b-core   { fill: #2a2110; stroke: #f59e0b; }
+        .b-cache  { fill: #2a2110; stroke: #f59e0b; }
+        .b-tls    { fill: #1f1a33; stroke: #a78bfa; }
+        .b-gh     { fill: #2d1517; stroke: #f87171; }
+        .b-doh    { fill: #0d2430; stroke: #38bdf8; }
+        .b-ca     { fill: #1b1730; stroke: #8b5cf6; }
+
+        .t-accent   { fill: #60a5fa; }
+        .t-accent2  { fill: #c4b5fd; }
+      }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1190" height="560" rx="12" class="bg"/>
+
+  <rect x="196" y="36" width="830" height="448" rx="10" class="band" stroke-dasharray="6 5"/>
+  <text x="212" y="60" font-size="12" class="t-band">路由器 · ghboost</text>
+
+  <!-- 客户端 -->
+  <rect x="24" y="230" width="150" height="86" rx="8" class="b-client"/>
+  <text x="99" y="256" font-size="13" font-weight="600" class="t-title" text-anchor="middle">客户端</text>
+  <text x="99" y="276" font-size="10.5" class="t-sub" text-anchor="middle">浏览器 / git / Desktop</text>
+  <text x="99" y="296" font-size="10.5" class="t-accent" text-anchor="middle">已安装本地 CA</text>
+
+  <!-- dnsmasq -->
+  <rect x="224" y="230" width="150" height="86" rx="8" class="b-dns"/>
+  <text x="299" y="254" font-size="13" font-weight="600" class="t-title" text-anchor="middle">dnsmasq</text>
+  <text x="299" y="274" font-size="10.5" class="t-sub" text-anchor="middle">监听 :53</text>
+  <text x="299" y="292" font-size="10.5" class="t-sub" text-anchor="middle">域名 → fake IP</text>
+
+  <!-- nftables / iptables -->
+  <rect x="424" y="230" width="150" height="86" rx="8" class="b-fw"/>
+  <text x="499" y="254" font-size="12.5" font-weight="600" class="t-title" text-anchor="middle">nftables / iptables</text>
+  <text x="499" y="274" font-size="10.5" class="t-sub" text-anchor="middle">自动检测后端</text>
+  <text x="499" y="292" font-size="10.5" class="t-sub" text-anchor="middle">REDIRECT → :18443</text>
+
+  <!-- ghboost 核心 -->
+  <rect x="624" y="230" width="160" height="86" rx="8" class="b-core"/>
+  <text x="704" y="262" font-size="13" font-weight="600" class="t-title" text-anchor="middle">ghboost 核心</text>
+  <text x="704" y="284" font-size="10.5" class="t-sub" text-anchor="middle">fake IP 反查域名</text>
+
+  <!-- TLS -->
+  <rect x="834" y="230" width="150" height="86" rx="8" class="b-tls"/>
+  <text x="909" y="256" font-size="13" font-weight="600" class="t-title" text-anchor="middle">TLS 处理</text>
+  <text x="909" y="276" font-size="10.5" class="t-sub" text-anchor="middle">SNI none / domain / random</text>
+  <text x="909" y="294" font-size="10.5" class="t-accent2" text-anchor="middle">MITM 动态证书</text>
+
+  <!-- 本地 CA -->
+  <rect x="834" y="86" width="150" height="66" rx="8" class="b-ca" stroke-dasharray="4 3"/>
+  <text x="909" y="110" font-size="12.5" font-weight="600" class="t-title" text-anchor="middle">本地 CA</text>
+  <text x="909" y="129" font-size="10.5" class="t-sub" text-anchor="middle">首次启动生成</text>
+  <text x="909" y="144" font-size="10.5" class="t-sub" text-anchor="middle">按域名签发证书</text>
+
+  <line x1="909" y1="152" x2="909" y2="226" class="ln-ca" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrowCA)"/>
+  <text x="919" y="194" font-size="9" class="t-accent2">签发</text>
+
+  <!-- GitHub -->
+  <rect x="1034" y="230" width="130" height="86" rx="8" class="b-gh"/>
+  <text x="1099" y="262" font-size="13" font-weight="600" class="t-title" text-anchor="middle">GitHub</text>
+  <text x="1099" y="284" font-size="10.5" class="t-sub" text-anchor="middle">真实 IP</text>
+
+  <!-- DoH 上游 -->
+  <rect x="624" y="86" width="160" height="60" rx="8" class="b-doh"/>
+  <text x="704" y="112" font-size="12.5" font-weight="600" class="t-title" text-anchor="middle">DoH 上游</text>
+  <text x="704" y="131" font-size="10.5" class="t-sub" text-anchor="middle">并发查询后合并</text>
+
+  <!-- 测速缓存 -->
+  <rect x="624" y="386" width="160" height="64" rx="8" class="b-cache"/>
+  <text x="704" y="411" font-size="12.5" font-weight="600" class="t-title" text-anchor="middle">真实 IP 测速缓存</text>
+  <text x="704" y="430" font-size="10.5" class="t-sub" text-anchor="middle">失败降权 / 多 IP 重试</text>
+
+  <!-- 主链路箭头 -->
+  <line x1="174" y1="273" x2="220" y2="273" class="ln" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="374" y1="273" x2="420" y2="273" class="ln" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="574" y1="273" x2="620" y2="273" class="ln" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="784" y1="273" x2="830" y2="273" class="ln" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="984" y1="273" x2="1030" y2="273" class="ln" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- 返回 fake IP -->
+  <path d="M220,296 L176,296" fill="none" class="ln-d" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrowD)"/>
+  <text x="198" y="312" font-size="9" class="t-sub" text-anchor="middle">② fake IP</text>
+
+  <!-- 核心 ↔ 缓存 -->
+  <line x1="704" y1="318" x2="704" y2="382" class="ln-d" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrowD)"/>
+  <line x1="690" y1="382" x2="690" y2="318" class="ln-d" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrowD)"/>
+  <text x="712" y="356" font-size="9" class="t-sub">补测 / 回填</text>
+
+  <!-- 核心 → DoH -->
+  <line x1="704" y1="228" x2="704" y2="150" class="ln-d" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrowD)"/>
+  <text x="714" y="194" font-size="9" class="t-sub">解析真实 IP</text>
+
+  <!-- 步骤序号 -->
+  <g font-size="9.5" text-anchor="middle">
+    <circle cx="198" cy="273" r="9" class="badge"/><text x="198" y="276.5" class="badge-t">1</text>
+    <circle cx="398" cy="273" r="9" class="badge"/><text x="398" y="276.5" class="badge-t">3</text>
+    <circle cx="598" cy="273" r="9" class="badge"/><text x="598" y="276.5" class="badge-t">4</text>
+    <circle cx="808" cy="273" r="9" class="badge"/><text x="808" y="276.5" class="badge-t">5</text>
+    <circle cx="1008" cy="273" r="9" class="badge"/><text x="1008" y="276.5" class="badge-t">6</text>
+  </g>
+
+  <!-- 图例 -->
+  <g font-size="10.5" class="t-legend">
+    <text x="24" y="512">① DNS 查询（路由 :53）　② 返回 fake IP　③ 连接 fake IP 被重定向　④ 反查域名并选路　⑤ TLS 处理　⑥ 转发到真实 IP</text>
+    <text x="24" y="530">虚线：旁路动作（DoH 解析真实 IP、测速缓存补测与回填、CA 签发证书）</text>
+    <text x="24" y="548" class="t-accent2">证书：本地 CA 由插件首次启动生成；客户端安装后才信任 MITM 证书，否则提示证书不受信任</text>
+  </g>
+</svg>
