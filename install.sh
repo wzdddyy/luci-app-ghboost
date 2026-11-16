@@ -63,17 +63,39 @@ for f in "$CORE" "$UI"; do
 	[ -s "$TMP/$f" ] || die "下载文件为空: $BASE/$f"
 done
 
-say "检查依赖 kmod-nft-nat ca-bundle"
+pkg_installed() {
+	if [ "$MGR" = "opkg" ]; then
+		opkg list-installed 2>/dev/null | awk '{print $1}' | grep -qx "$1"
+	else
+		grep -qx "P:$1" /lib/apk/db/installed 2>/dev/null ||
+			grep -qx "P:$1" /usr/lib/apk/db/installed 2>/dev/null
+	fi
+}
+
+missing=""
+for p in kmod-nft-nat ca-bundle; do
+	pkg_installed "$p" || missing="$missing $p"
+done
+
+if [ -n "$missing" ]; then
+	say "缺少依赖:$missing，刷新软件源后安装（首次较慢，请等待）"
+	if [ "$MGR" = "opkg" ]; then
+		opkg update || say "警告: opkg update 失败，继续尝试"
+		opkg install $missing || say "警告: 依赖安装失败，请检查软件源"
+	else
+		apk update || say "警告: apk update 失败，继续尝试"
+		apk add $missing || say "警告: 依赖安装失败，请检查软件源"
+	fi
+else
+	say "依赖 kmod-nft-nat ca-bundle 已安装，跳过软件源刷新"
+fi
+
 if [ "$MGR" = "opkg" ]; then
-	opkg update >/dev/null 2>&1 || say "警告: opkg update 失败，继续尝试"
-	opkg install kmod-nft-nat ca-bundle >/dev/null 2>&1 || say "警告: 依赖安装失败，请检查软件源"
 	if ! opkg install "$TMP/$CORE" "$TMP/$UI"; then
 		say "安装失败，可手动执行: opkg install $TMP/$CORE $TMP/$UI"
 		exit 1
 	fi
 else
-	apk update >/dev/null 2>&1 || say "警告: apk update 失败，继续尝试"
-	apk add kmod-nft-nat ca-bundle >/dev/null 2>&1 || say "警告: 依赖安装失败，请检查软件源"
 	if ! apk add --allow-untrusted "$TMP/$CORE" "$TMP/$UI"; then
 		say "安装失败，可手动执行: apk add --allow-untrusted $TMP/$CORE $TMP/$UI"
 		exit 1
