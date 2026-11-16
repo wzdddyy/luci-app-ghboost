@@ -9,11 +9,11 @@ GitHub 访问优化插件。DNS 防污染解析 + 本地透明重定向 + 真实
 - `ghboost` — 核心包，Go 单文件二进制
 - `luci-app-ghboost` — 界面包，LuCI 页面
 
-## 特性
+## 原理
 
-- DoH 防污染解析，多上游并发查询后合并
-- 真实 IP 实测选路，失败自动降权并切换
-- 按域名控制上游 SNI：`none` / `domain` / `random`
+<p align="center"><img src="arch.svg" alt="ghboost 原理拓扑图" width="100%"></p>
+
+解析、选路、转发三段解耦：DNS 只负责把 GitHub 域名指向 fake IP，转发层根据 fake IP 反查域名，再在实测可用的真实 IP 中选一个建立连接，失败自动换下一个并降权。
 
 ## 客户端安装 CA
 
