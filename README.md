@@ -9,6 +9,20 @@ GitHub 访问优化插件。DNS 防污染解析 + 本地透明重定向 + 真实
 - `ghboost` — 核心包，Go 单文件二进制
 - `luci-app-ghboost` — 界面包，LuCI 页面
 
+## 快速安装
+
+支持 OpenWrt 24.10（opkg）和 25.12+（apk），脚本会自动识别包管理器与设备架构：
+
+```sh
+wget -qO- https://raw.githubusercontent.com/wzdddyy/luci-app-ghboost/main/install.sh | sh
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wzdddyy/luci-app-ghboost/main/install.sh | sh
+```
+
+
+
 ## 原理
 
 <p align="center"><img src="arch.svg" alt="ghboost 原理拓扑图" width="100%"></p>
