@@ -27,6 +27,7 @@ DNSCHECK_FILE=/tmp/ghboost.dnscheck
 
 ADDRS_CACHE=
 CFG_FP=
+AAAA_OK=
 
 CIDR_USER=0
 MAX_CONNS_USER=0
@@ -143,6 +144,7 @@ route_conflict() {
 	[ -n "$out" ] || return 1
 	case "$out" in
 	*" via "*) return 1 ;;
+	*" dev lo "*) return 1 ;;
 	esac
 	return 0
 }
@@ -288,6 +290,27 @@ dnsmasq_our_rules() {
 	done
 }
 
+aaaa_rule_supported() {
+	local probe=/tmp/ghboost.aaaa.probe
+	[ -n "$AAAA_OK" ] && { [ "$AAAA_OK" = 1 ]; return $?; }
+	AAAA_OK=0
+	printf 'address=/ghboost.invalid/::\n' > "$probe" 2>/dev/null
+	if command -v dnsmasq >/dev/null 2>&1 && dnsmasq --test -C "$probe" >/dev/null 2>&1; then
+		AAAA_OK=1
+	fi
+	rm -f "$probe"
+	[ "$AAAA_OK" = 1 ]
+}
+
+build_dnsmasq_rules() {
+	awk '!/^[[:space:]]*#/ && NF>=2 {print "/"$2"/"$1}' "$DOMAINS" 2>/dev/null
+	if aaaa_rule_supported; then
+		awk '!/^[[:space:]]*#/ && NF>=2 {print "/"$2"/::"}' "$DOMAINS" 2>/dev/null
+	else
+		gl "WARN: 当前 dnsmasq 不支持 address=/domain/:: , 跳过 AAAA 抑制"
+	fi
+}
+
 setup_dnsmasq() {
 	local rule new_rules cur_rules
 
@@ -296,7 +319,7 @@ setup_dnsmasq() {
 		return 0
 	fi
 
-	new_rules="$(awk '!/^[[:space:]]*#/ && NF>=2 {print "/"$2"/"$1}' "$DOMAINS" 2>/dev/null)"
+	new_rules="$(build_dnsmasq_rules)"
 
 	cur_rules="$(dnsmasq_our_rules)"
 
@@ -469,7 +492,7 @@ fw_backend() {
 }
 
 setup_firewall() {
-	local backend
+	local backend route_added=0
 	backend="$(fw_backend)"
 
 	if [ "$backend" = none ]; then
@@ -477,7 +500,15 @@ setup_firewall() {
 		return 1
 	fi
 
-	printf '%s %s %s\n' "$backend" "$FAKE_CIDR" "$LISTEN_PORT" > "$STATE"
+	if ip route show "$FAKE_CIDR" 2>/dev/null | grep -q "^$FAKE_CIDR dev lo"; then
+		route_added=1
+	elif ip route show "$FAKE_CIDR" 2>/dev/null | grep -q .; then
+		gl "WARN: $FAKE_CIDR 已存在其它路由, 本机命令可能不经过 ghboost"
+	elif ip route add "$FAKE_CIDR" dev lo 2>/dev/null; then
+		route_added=1
+	fi
+
+	printf '%s %s %s %s\n' "$backend" "$FAKE_CIDR" "$LISTEN_PORT" "$route_added" > "$STATE"
 
 	if [ "$backend" = nft ]; then
 		nft delete table ip ghboost 2>/dev/null
@@ -485,24 +516,33 @@ setup_firewall() {
 		nft 'add chain ip ghboost prerouting { type nat hook prerouting priority dstnat; policy accept; }'
 		nft add rule ip ghboost prerouting ip daddr "$FAKE_CIDR" meta l4proto tcp \
 			redirect to :"$LISTEN_PORT"
+		nft 'add chain ip ghboost output { type nat hook output priority dstnat; policy accept; }'
+		nft add rule ip ghboost output ip daddr "$FAKE_CIDR" meta l4proto tcp \
+			redirect to :"$LISTEN_PORT"
 	else
 		iptables -t nat -N GH_BOOST 2>/dev/null || true
 		iptables -t nat -F GH_BOOST
 		iptables -t nat -A GH_BOOST -p tcp -j REDIRECT --to-ports "$LISTEN_PORT"
 		iptables -t nat -C PREROUTING -d "$FAKE_CIDR" -j GH_BOOST 2>/dev/null \
 			|| iptables -t nat -I PREROUTING 1 -d "$FAKE_CIDR" -j GH_BOOST
+		iptables -t nat -C OUTPUT -d "$FAKE_CIDR" -j GH_BOOST 2>/dev/null \
+			|| iptables -t nat -I OUTPUT 1 -d "$FAKE_CIDR" -j GH_BOOST
 	fi
 
 	gl "转发规则已下发: backend=$backend fake=$FAKE_CIDR port=$LISTEN_PORT"
 }
 
 remove_firewall() {
-	local backend fake
+	local backend fake added
 	if [ -f "$STATE" ]; then
-		read -r backend fake _ < "$STATE"
+		read -r backend fake _ added < "$STATE"
 	fi
 	[ -n "$fake" ] || fake="$FAKE_CIDR"
 	[ -n "$backend" ] || backend="$(fw_backend)"
+
+	if [ "$added" = 1 ]; then
+		ip route del "$fake" dev lo 2>/dev/null || true
+	fi
 
 	case "$backend" in
 	nft)
@@ -510,6 +550,7 @@ remove_firewall() {
 		;;
 	iptables)
 		iptables -t nat -D PREROUTING -d "$fake" -j GH_BOOST 2>/dev/null || true
+		iptables -t nat -D OUTPUT -d "$fake" -j GH_BOOST 2>/dev/null || true
 		iptables -t nat -F GH_BOOST 2>/dev/null || true
 		iptables -t nat -X GH_BOOST 2>/dev/null || true
 		;;
@@ -519,10 +560,66 @@ remove_firewall() {
 	gl "转发规则已移除"
 }
 
+CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
+CA_MARK_BEGIN="# ghboost-ca-begin"
+CA_MARK_END="# ghboost-ca-end"
+
+untrust_router_ca() {
+	local tmp
+	[ -f "$CA_BUNDLE" ] || return 0
+	grep -q "^$CA_MARK_BEGIN" "$CA_BUNDLE" 2>/dev/null || return 0
+
+	tmp="$CA_BUNDLE.ghboost.tmp"
+	if ! awk -v b="$CA_MARK_BEGIN" -v e="$CA_MARK_END" '
+		index($0, b) == 1 { skip = 1; next }
+		index($0, e) == 1 { skip = 0; next }
+		!skip
+	' "$CA_BUNDLE" > "$tmp" 2>/dev/null; then
+		rm -f "$tmp"
+		gl "WARN: 重写 $CA_BUNDLE 失败, 跳过移除"
+		return 0
+	fi
+	cat "$tmp" > "$CA_BUNDLE" 2>/dev/null || gl "WARN: 写回 $CA_BUNDLE 失败"
+	rm -f "$tmp"
+	gl "ghboost CA 已从路由器信任库移除"
+}
+
+trust_router_ca() {
+	local fp i=0
+
+	if [ ! -f "$CA_BUNDLE" ]; then
+		gl "WARN: 没有 $CA_BUNDLE (ca-bundle 未安装), 跳过路由器本机证书信任"
+		return 0
+	fi
+
+	while [ ! -s "$CA_CERT" ] && [ "$i" -lt 10 ]; do
+		sleep 0.2 2>/dev/null || sleep 1
+		i=$((i + 1))
+	done
+	if [ ! -s "$CA_CERT" ]; then
+		gl "WARN: $CA_CERT 未生成, 跳过路由器本机证书信任"
+		return 0
+	fi
+
+	fp="$(sha1sum "$CA_CERT" 2>/dev/null | awk '{print $1}')"
+	[ -n "$fp" ] || return 0
+	if grep -qx "$CA_MARK_BEGIN $fp" "$CA_BUNDLE" 2>/dev/null; then
+		return 0
+	fi
+
+	untrust_router_ca
+	if ! { printf '\n%s %s\n' "$CA_MARK_BEGIN" "$fp"; cat "$CA_CERT"; printf '%s\n' "$CA_MARK_END"; } >> "$CA_BUNDLE" 2>/dev/null; then
+		gl "WARN: 写入 $CA_BUNDLE 失败"
+		return 0
+	fi
+	gl "ghboost CA 已加入路由器信任库 $CA_BUNDLE (sha1=$fp)"
+}
+
 start_service() {
 	load_config
 	if [ "$ENABLED" != "1" ]; then
 		/etc/init.d/ghboost disable 2>/dev/null
+		untrust_router_ca
 		gl "配置已禁用，不启动服务"
 		return 0
 	fi
@@ -563,6 +660,8 @@ start_service() {
 
 	setup_dnsmasq
 	verify_dnsmasq
+
+	trust_router_ca
 }
 
 cfg_fingerprint() {
@@ -607,6 +706,7 @@ reload_service() {
 	check_fake_conflict
 	setup_dnsmasq
 	setup_firewall
+	trust_router_ca
 	local pids
 	pids="$(ghboost_pids)"
 	[ -n "$pids" ] && kill -HUP $pids 2>/dev/null
@@ -629,6 +729,7 @@ stop_service() {
 
 	remove_firewall
 	remove_dnsmasq
+	untrust_router_ca
 	rm -f "$STATS_FILE" "$CFG_STATE" "$RUNTIME" "$DNSCHECK_FILE"
 
 	local i=0
@@ -700,6 +801,11 @@ diagnose() {
 		else
 			echo "FAIL: nft 表 ip ghboost 不存在 (服务未启动, 或 fw4 重载后没重建)"
 		fi
+		if nft list chain ip ghboost output >/dev/null 2>&1; then
+			echo "OK: 本机 OUTPUT 重定向存在"
+		else
+			echo "WARN: 缺少 OUTPUT 链, 路由器本机命令不会被转发"
+		fi
 		;;
 	iptables)
 		if iptables -t nat -S GH_BOOST >/dev/null 2>&1; then
@@ -707,11 +813,26 @@ diagnose() {
 		else
 			echo "FAIL: iptables 链 GH_BOOST 不存在"
 		fi
+		if iptables -t nat -S OUTPUT 2>/dev/null | grep -q GH_BOOST; then
+			echo "OK: 本机 OUTPUT 重定向存在"
+		else
+			echo "WARN: 缺少 OUTPUT 规则, 路由器本机命令不会被转发"
+		fi
 		;;
 	*)
 		echo "FAIL: 系统里既没有 nft 也没有 iptables"
 		;;
 	esac
+	if ip route show "$FAKE_CIDR" 2>/dev/null | grep -q "^$FAKE_CIDR dev lo"; then
+		echo "OK: 本机路由 $FAKE_CIDR dev lo 存在"
+	else
+		echo "WARN: 缺少 $FAKE_CIDR dev lo 路由, 路由器本机命令可能连不通"
+	fi
+	if [ -f "$CA_BUNDLE" ] && grep -q "^$CA_MARK_BEGIN" "$CA_BUNDLE" 2>/dev/null; then
+		echo "OK: 路由器本机已信任 ghboost CA"
+	else
+		echo "WARN: 路由器本机未信任 ghboost CA, 本机命令访问 GitHub 会报证书错误"
+	fi
 	echo
 
 	echo "-- dnsmasq 是否已下发 fake IP 应答"
