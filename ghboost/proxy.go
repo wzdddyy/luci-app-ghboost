@@ -25,14 +25,14 @@ const (
 
 	relayIdle      = 300 * time.Second
 	relayFirstByte = 1500 * time.Millisecond
-	failPenalty    = 1 * time.Minute
 
 	requestWaitTimeout = 3 * time.Second
 
 	warmupProbeCount  = 8
 	warmupPort        = "443"
 	warmupConcurrency = 4
-	warmupSkipFail    = 5 * time.Minute
+
+	failCooldown = 30 * time.Minute
 
 	probeTick       = 150 * time.Second
 	probeFreshAfter = 15 * time.Minute
@@ -881,7 +881,11 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitin
 func (p *Proxy) probeUntested(domain string, ips []string, port string) (probed bool, anyOK bool) {
 	var todo []string
 	for _, ip := range ips {
-		if st := p.statOf(domain, ip); st == nil || st.rttAt.IsZero() {
+		st := p.statOf(domain, ip)
+		if st == nil || st.rttAt.IsZero() {
+			if st != nil && st.failCnt > 0 && time.Since(st.failAt) < failCooldown {
+				continue
+			}
 			todo = append(todo, ip)
 		}
 	}
@@ -943,20 +947,21 @@ func (p *Proxy) allowProbe(domain string) bool {
 
 func (p *Proxy) order(domain string, ips []string) []string {
 	type item struct {
-		ip    string
-		rtt   time.Duration
-		known bool
-		bad   bool
+		ip       string
+		rtt      time.Duration
+		known    bool
+		bad      bool
+		failedAt time.Time
 	}
 
-	now := time.Now()
 	p.statMu.Lock()
 	items := make([]item, 0, len(ips))
 	for _, ip := range ips {
 		it := item{ip: ip}
 		if st := p.stats[domain+"|"+ip]; st != nil {
-			if st.failCnt > 0 && st.failAt.After(st.rttAt) && now.Sub(st.failAt) < failPenalty {
+			if st.failCnt > 0 && st.failAt.After(st.rttAt) {
 				it.bad = true
+				it.failedAt = st.failAt
 			}
 			if st.rtt > 0 {
 				it.rtt = st.rtt
@@ -971,6 +976,9 @@ func (p *Proxy) order(domain string, ips []string) []string {
 		a, b := items[i], items[j]
 		if a.bad != b.bad {
 			return !a.bad
+		}
+		if a.bad {
+			return a.failedAt.Before(b.failedAt)
 		}
 		if a.known != b.known {
 			return a.known
@@ -1432,7 +1440,7 @@ func (p *Proxy) probeDomains(doms []string) int64 {
 				break
 			}
 			if st := p.statOf(d, ip); st != nil && st.failCnt > 0 {
-				if time.Since(st.failAt) < warmupSkipFail {
+				if time.Since(st.failAt) < failCooldown {
 					continue
 				}
 			}
@@ -1525,7 +1533,7 @@ func (p *Proxy) loadBest() {
 				rtt:     time.Duration(e.RTTMs) * time.Millisecond,
 				rttAt:   e.At,
 				failAt:  e.FailAt,
-				failCnt: boolToInt(!e.FailAt.IsZero()),
+				failCnt: boolToInt(e.FailAt.After(e.At)),
 			}
 			loaded++
 		}
