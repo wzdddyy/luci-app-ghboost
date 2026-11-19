@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -25,6 +26,12 @@ const (
 
 	relayIdle      = 300 * time.Second
 	relayFirstByte = 1500 * time.Millisecond
+	relayStall     = 15 * time.Second
+
+	speedSampleBytes = 64 << 10
+	speedSampleDur   = 300 * time.Millisecond
+	slowSpeedMin     = 64 << 10
+	slowWindow       = 10 * time.Minute
 
 	requestWaitTimeout = 3 * time.Second
 
@@ -182,6 +189,9 @@ type ipStat struct {
 	failAt  time.Time 
 	failCnt int
 	okCnt   int
+	speed   float64
+	speedAt time.Time
+	rttTLS  bool
 }
 
 func NewProxy(cfg ProxyOptions, res *resolver, table *domainTable, certs *CertStore) *Proxy {
@@ -379,7 +389,9 @@ func (p *Proxy) handlePlain(client net.Conn, domain string, ordered []string, po
 				continue
 			}
 
-			res := relay(client, conn, relayIdle, replay, false)
+			res := relay(client, conn, relayIdle, replay, false, func(n int64, dur time.Duration) {
+				p.recordSpeed(domain, ip, n, dur)
+			})
 			conn.Close()
 			if res.recv > 0 {
 				if res.aborted {
@@ -531,11 +543,13 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 			}
 
 			setup := time.Since(start)
-			res := relay(cliBuf, bufUp, relayIdle, nil, true)
+			res := relay(cliBuf, bufUp, relayIdle, nil, true, func(n int64, dur time.Duration) {
+				p.recordSpeed(domain, ip, n, dur)
+			})
 			upstreamTLS.Close()
 
 			if res.recv > 0 {
-				p.recordDial(domain, ip, setup, nil)
+				p.recordDialTLS(domain, ip, setup, nil)
 				if res.aborted {
 					p.recordDial(domain, ip, 0, errors.New("连接中途被断开"))
 				}
@@ -638,7 +652,7 @@ func (p *Proxy) expandCandidates(domain, port string, tried []string) {
 			if derr != nil {
 				return
 			}
-			p.recordDial(domain, ip, elapsed, nil)
+			p.recordDialTLS(domain, ip, elapsed, nil)
 			mu.Lock()
 			found = append(found, ip)
 			mu.Unlock()
@@ -739,11 +753,242 @@ func (r *replayReader) snapshot() []byte {
 	return out
 }
 
+const (
+	frameIdle = iota
+	frameHead
+	frameBody
+	frameChunkSize
+	frameChunkData
+	frameChunkEnd
+	frameTrailer
+	frameClose
+)
+
+const maxResponseHead = 64 << 10
+
+type frameReader struct {
+	phase  int
+	head   []byte
+	remain int64
+	need   int
+	body   int64
+	start  time.Time
+	bodyAt time.Time
+	onDone func(int64, time.Duration)
+}
+
+func (f *frameReader) inProgress() bool {
+	return f.phase != frameIdle
+}
+
+func (f *frameReader) feed(b []byte) {
+	for len(b) > 0 {
+		switch f.phase {
+		case frameIdle:
+			f.phase = frameHead
+			f.head = f.head[:0]
+			f.body = 0
+			f.bodyAt = time.Time{}
+			f.start = time.Now()
+
+		case frameHead:
+			n := len(b)
+			idx := bytes.Index(b, []byte("\r\n\r\n"))
+			if idx >= 0 {
+				n = idx + 4
+			}
+			if len(f.head)+n > maxResponseHead {
+				f.phase = frameClose
+				f.body += int64(len(b))
+				f.bodyAt = time.Now()
+				return
+			}
+			f.head = append(f.head, b[:n]...)
+			b = b[n:]
+			if idx < 0 {
+				return
+			}
+			f.parseHead()
+
+		case frameBody:
+			n := int64(len(b))
+			if n > f.remain {
+				n = f.remain
+			}
+			f.body += n
+			f.remain -= n
+			b = b[n:]
+			if f.remain == 0 {
+				f.finish()
+			}
+
+		case frameChunkSize:
+			idx := bytes.Index(b, []byte("\r\n"))
+			if idx < 0 {
+				f.head = append(f.head, b...)
+				if len(f.head) > 256 {
+					f.phase = frameClose
+				}
+				return
+			}
+			line := append(f.head, b[:idx]...)
+			f.head = f.head[:0]
+			b = b[idx+2:]
+			size, ok := parseChunkSize(line)
+			if !ok {
+				f.phase = frameClose
+				f.body += int64(len(b))
+				return
+			}
+			if size == 0 {
+				f.phase = frameTrailer
+				f.head = f.head[:0]
+				continue
+			}
+			f.remain = size
+			f.phase = frameChunkData
+
+		case frameChunkData:
+			n := int64(len(b))
+			if n > f.remain {
+				n = f.remain
+			}
+			f.body += n
+			f.remain -= n
+			b = b[n:]
+			if f.remain == 0 {
+				f.need = 2
+				f.phase = frameChunkEnd
+			}
+
+		case frameChunkEnd:
+			if len(b) < f.need {
+				f.need -= len(b)
+				return
+			}
+			b = b[f.need:]
+			f.need = 0
+			f.phase = frameChunkSize
+			f.head = f.head[:0]
+
+		case frameTrailer:
+			idx := bytes.Index(b, []byte("\r\n"))
+			if idx < 0 {
+				f.head = append(f.head, b...)
+				if len(f.head) > maxResponseHead {
+					f.phase = frameClose
+				}
+				return
+			}
+			line := b[:idx]
+			b = b[idx+2:]
+			if len(line) == 0 {
+				f.finish()
+			}
+
+		case frameClose:
+			f.body += int64(len(b))
+			return
+		}
+	}
+}
+
+func (f *frameReader) parseHead() {
+	lines := strings.Split(string(f.head), "\r\n")
+	f.head = f.head[:0]
+
+	status := 0
+	if len(lines) > 0 {
+		if fs := strings.Fields(lines[0]); len(fs) >= 2 {
+			if n, err := strconv.Atoi(fs[1]); err == nil {
+				status = n
+			}
+		}
+	}
+
+	cl := int64(-1)
+	chunked := false
+	for _, l := range lines[1:] {
+		i := strings.IndexByte(l, ':')
+		if i <= 0 {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(l[:i])) {
+		case "content-length":
+			if n, err := strconv.ParseInt(strings.TrimSpace(l[i+1:]), 10, 64); err == nil && n >= 0 {
+				cl = n
+			}
+		case "transfer-encoding":
+			if strings.Contains(strings.ToLower(l[i+1:]), "chunked") {
+				chunked = true
+			}
+		}
+	}
+
+	switch {
+	case status >= 100 && status < 200:
+		f.phase = frameHead
+		f.bodyAt = time.Time{}
+		f.start = time.Now()
+	case status == 204 || status == 304:
+		f.finish()
+	case chunked:
+		f.bodyAt = time.Now()
+		f.remain = 0
+		f.phase = frameChunkSize
+	case cl >= 0:
+		f.remain = cl
+		if cl == 0 {
+			f.finish()
+		} else {
+			f.bodyAt = time.Now()
+			f.phase = frameBody
+		}
+	default:
+		f.bodyAt = time.Now()
+		f.phase = frameClose
+	}
+}
+
+func (f *frameReader) finish() {
+	if f.body > 0 && f.onDone != nil {
+		base := f.bodyAt
+		if base.IsZero() {
+			base = f.start
+		}
+		f.onDone(f.body, time.Since(base))
+	}
+	f.phase = frameIdle
+	f.body = 0
+	f.remain = 0
+}
+
+func (f *frameReader) eof() {
+	if f.phase == frameClose {
+		f.finish()
+	}
+	f.phase = frameIdle
+}
+
+func parseChunkSize(line []byte) (int64, bool) {
+	s := strings.TrimSpace(string(line))
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	n, err := strconv.ParseInt(s, 16, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 type idleReader struct {
 	conn      net.Conn
 	idle      time.Duration
 	firstByte time.Duration
 	awaiting  *atomic.Bool
+	frame     *frameReader
+	stall     time.Duration
 	lastErr   error
 	deadline  time.Time
 }
@@ -752,11 +997,16 @@ const deadlineSlack = 5 * time.Second
 
 func (r *idleReader) Read(b []byte) (int, error) {
 	d := r.idle
+	stall := false
 	if r.firstByte > 0 && r.awaiting != nil && r.awaiting.Load() {
 		d = r.firstByte
+	} else if r.stall > 0 && r.frame != nil && r.frame.inProgress() {
+		d = r.stall
+		stall = true
 	}
 	now := time.Now()
-	if r.deadline.IsZero() || d <= deadlineSlack || r.deadline.Sub(now) < d-deadlineSlack {
+	if r.deadline.IsZero() || d <= deadlineSlack || r.deadline.Sub(now) < d-deadlineSlack ||
+		(stall && r.deadline.Sub(now) > d) {
 		r.deadline = now.Add(d)
 		_ = r.conn.SetReadDeadline(r.deadline)
 	}
@@ -781,7 +1031,8 @@ func looksLikeRequest(b []byte) bool {
 	return false
 }
 
-func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitingReply bool) relayResult {
+func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitingReply bool,
+	onResp func(n int64, dur time.Duration)) relayResult {
 	const (
 		dirUp   = 1 
 		dirDown = 2 
@@ -796,8 +1047,16 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitin
 	var sent, recv atomic.Int64
 	var answered, awaiting, clientGone atomic.Bool
 	done := make(chan int, 2)
+	frame := &frameReader{onDone: onResp}
 	up := &replayReader{r: &idleReader{conn: client, idle: idle}, answered: &answered}
-	downReader := &idleReader{conn: upstream, idle: idle, firstByte: relayFirstByte, awaiting: &awaiting}
+	downReader := &idleReader{
+		conn:      upstream,
+		idle:      idle,
+		firstByte: relayFirstByte,
+		awaiting:  &awaiting,
+		frame:     frame,
+		stall:     relayStall,
+	}
 
 	if awaitingReply {
 		awaiting.Store(true)
@@ -837,15 +1096,31 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitin
 	}()
 	go func() {
 		cw := &trackedWriter{w: client}
-		n, _ := io.Copy(cw, downReader)
-		recv.Add(n)
-		if n > 0 {
-			answered.Store(true)
+		buf := make([]byte, 32<<10)
+		var got int64
+		for {
+			n, rerr := downReader.Read(buf)
+			if n > 0 {
+				frame.feed(buf[:n])
+				got += int64(n)
+				recv.Add(int64(n))
+				answered.Store(true)
+				if _, werr := cw.Write(buf[:n]); werr != nil {
+					clientGone.Store(true)
+					break
+				}
+			}
+			if rerr != nil {
+				if rerr == io.EOF {
+					frame.eof()
+				}
+				break
+			}
 		}
 		if cw.failed.Load() {
 			clientGone.Store(true)
 		}
-		if n > 0 {
+		if got > 0 {
 			closeWrite(client)
 		}
 		done <- dirDown
@@ -872,7 +1147,7 @@ func relay(client, upstream net.Conn, idle time.Duration, replay []byte, awaitin
 	if res.recv == 0 {
 		res.replay = up.snapshot()
 	}
-	if first == dirDown && downReader.lastErr != nil {
+	if first == dirDown && downReader.lastErr != nil && frame.inProgress() {
 		res.aborted = true
 	}
 	return res
@@ -912,6 +1187,8 @@ func (p *Proxy) probeUntested(domain string, ips []string, port string) (probed 
 					p.recordDial(domain, ip, 0, fmt.Errorf("TLS/HTTP 校验失败: %v", herr))
 					return
 				}
+				p.recordDialTLS(domain, ip, time.Since(start), nil)
+				return
 			}
 			p.recordDial(domain, ip, time.Since(start), nil)
 		}(ip)
@@ -949,11 +1226,14 @@ func (p *Proxy) order(domain string, ips []string) []string {
 	type item struct {
 		ip       string
 		rtt      time.Duration
+		speed    float64
 		known    bool
 		bad      bool
+		slow     bool
 		failedAt time.Time
 	}
 
+	now := time.Now()
 	p.statMu.Lock()
 	items := make([]item, 0, len(ips))
 	for _, ip := range ips {
@@ -967,6 +1247,10 @@ func (p *Proxy) order(domain string, ips []string) []string {
 				it.rtt = st.rtt
 				it.known = true
 			}
+			if st.speed > 0 && now.Sub(st.speedAt) < slowWindow {
+				it.speed = st.speed
+				it.slow = st.speed < slowSpeedMin
+			}
 		}
 		items = append(items, it)
 	}
@@ -979,6 +1263,12 @@ func (p *Proxy) order(domain string, ips []string) []string {
 		}
 		if a.bad {
 			return a.failedAt.Before(b.failedAt)
+		}
+		if a.slow != b.slow {
+			return !a.slow
+		}
+		if a.slow && b.slow && a.speed != b.speed {
+			return a.speed > b.speed
 		}
 		if a.known != b.known {
 			return a.known
@@ -1012,6 +1302,43 @@ func (p *Proxy) recordDial(domain, ip string, d time.Duration, err error) {
 	} else {
 		st.failAt = time.Now()
 		st.failCnt++
+	}
+	p.statMu.Unlock()
+}
+
+func (p *Proxy) recordSpeed(domain, ip string, n int64, dur time.Duration) {
+	if n < speedSampleBytes || dur < speedSampleDur {
+		return
+	}
+	bps := float64(n) / dur.Seconds()
+	if bps <= 0 {
+		return
+	}
+
+	p.statMu.Lock()
+	defer p.statMu.Unlock()
+	key := domain + "|" + ip
+	st := p.stats[key]
+	if st == nil {
+		st = &ipStat{}
+		p.stats[key] = st
+	}
+	if st.speed <= 0 {
+		st.speed = bps
+	} else {
+		st.speed = st.speed*0.6 + bps*0.4
+	}
+	st.speedAt = time.Now()
+}
+
+func (p *Proxy) recordDialTLS(domain, ip string, d time.Duration, err error) {
+	p.recordDial(domain, ip, d, err)
+	if err != nil {
+		return
+	}
+	p.statMu.Lock()
+	if st := p.stats[domain+"|"+ip]; st != nil {
+		st.rttTLS = true
 	}
 	p.statMu.Unlock()
 }
@@ -1452,7 +1779,7 @@ func (p *Proxy) probeDomains(doms []string) int64 {
 				sni := p.computeSNI(d)
 				skipVerify := p.ignoreCertMismatch(d)
 				elapsed, derr := tlsProbe(ip, d, sni, skipVerify, warmupPort, dialTimeout, true)
-				p.recordDial(d, ip, elapsed, derr)
+				p.recordDialTLS(d, ip, elapsed, derr)
 				atomic.AddInt64(&probed, 1)
 			}(d, ip)
 		}
@@ -1477,6 +1804,7 @@ func (p *Proxy) statOf(domain, ip string) *ipStat {
 
 type bestEntry struct {
 	RTTMs  int64     `json:"rtt_ms"`
+	TLS    bool      `json:"tls,omitempty"`
 	FailAt time.Time `json:"fail_at,omitempty"`
 	At     time.Time `json:"at"`
 }
@@ -1498,7 +1826,7 @@ func (p *Proxy) saveBest() {
 			m = make(map[string]bestEntry)
 			out[d] = m
 		}
-		m[ip] = bestEntry{RTTMs: st.rtt.Milliseconds(), FailAt: st.failAt, At: st.rttAt}
+		m[ip] = bestEntry{RTTMs: st.rtt.Milliseconds(), TLS: st.rttTLS, FailAt: st.failAt, At: st.rttAt}
 	}
 	p.statMu.Unlock()
 
@@ -1534,6 +1862,7 @@ func (p *Proxy) loadBest() {
 				rttAt:   e.At,
 				failAt:  e.FailAt,
 				failCnt: boolToInt(e.FailAt.After(e.At)),
+				rttTLS:  e.TLS,
 			}
 			loaded++
 		}
