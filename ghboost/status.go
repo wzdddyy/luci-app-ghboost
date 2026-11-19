@@ -88,6 +88,8 @@ func (p *Proxy) snapshot() StatusSnapshot {
 	for i := range hosts {
 		h := &hosts[i]
 		var bestMs int64
+		var plainIP string
+		var plainMs int64
 		for _, ip := range h.IPs {
 			st := p.stats[h.Domain+"|"+ip]
 			if st == nil {
@@ -95,13 +97,24 @@ func (p *Proxy) snapshot() StatusSnapshot {
 			}
 			h.OK += st.okCnt
 			h.Fail += st.failCnt
-			if st.rtt > 0 && st.failAt.After(st.rttAt) {
+			if st.rtt <= 0 || st.failAt.After(st.rttAt) {
 				continue
 			}
-			if st.rtt > 0 && (h.Best == "" || st.rtt.Milliseconds() < bestMs) {
-				h.Best = ip
-				bestMs = st.rtt.Milliseconds()
+			ms := st.rtt.Milliseconds()
+			if !st.rttTLS {
+				if plainIP == "" || ms < plainMs {
+					plainIP, plainMs = ip, ms
+				}
+				continue
 			}
+			if h.Best == "" || ms < bestMs {
+				h.Best = ip
+				bestMs = ms
+			}
+		}
+		if h.Best == "" && plainIP != "" {
+			h.Best = plainIP
+			bestMs = plainMs
 		}
 		h.BestMs = bestMs
 	}
