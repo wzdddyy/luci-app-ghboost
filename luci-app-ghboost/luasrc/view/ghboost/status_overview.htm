@@ -241,6 +241,7 @@
 
         var best = 0;
         (st.hosts || []).forEach(function(h) {
+            if (plainMap[h.domain]) { return; }
             if (h.best_ms > 0 && (!best || h.best_ms < best)) { best = h.best_ms; }
         });
         $("gh-best").innerHTML = best ? best + " <small>ms</small>" : "--";
