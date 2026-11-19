@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ghboost
-PKG_VERSION:=1.2.6
+PKG_VERSION:=1.2.7
 PKG_RELEASE:=1
 PKG_MAINTAINER:=wzdddyy
 PKG_LICENSE:=Apache-2.0
