@@ -623,6 +623,19 @@ trust_router_ca() {
 	gl "ghboost CA 已加入路由器信任库 $CA_BUNDLE"
 }
 
+trust_router_ca_bg() {
+	(
+		local i=0
+		while [ ! -s "$CA_CERT" ] && [ "$i" -lt 120 ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+		pidof ghboost >/dev/null 2>&1 || return 0
+		[ -f "$RUNTIME" ] || return 0
+		trust_router_ca
+	) >/dev/null 2>&1 &
+}
+
 start_service() {
 	load_config
 	if [ "$ENABLED" != "1" ]; then
@@ -672,7 +685,7 @@ start_service() {
 	setup_dnsmasq
 	verify_dnsmasq
 
-	trust_router_ca
+	trust_router_ca_bg
 }
 
 cfg_fingerprint() {
