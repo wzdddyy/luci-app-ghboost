@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -146,7 +148,7 @@ func (p *Proxy) statusLoop() {
 	if p.cfg.StatsFile == "" {
 		return
 	}
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
 		p.writeStatus()
@@ -159,9 +161,20 @@ func (p *Proxy) statusLoop() {
 	}
 }
 
+var (
+	statusErrMu sync.Mutex
+	statusErrAt time.Time
+)
+
 func (p *Proxy) writeStatus() {
 	if err := writeJSONAtomic(p.cfg.StatsFile, p.snapshot()); err != nil {
-		logWarn("写状态快照失败: %v", err)
+		statusErrMu.Lock()
+		now := time.Now()
+		if statusErrAt.IsZero() || now.Sub(statusErrAt) >= time.Minute {
+			statusErrAt = now
+			logWarn("写状态快照失败: %v", err)
+		}
+		statusErrMu.Unlock()
 	}
 }
 
@@ -170,8 +183,27 @@ func writeJSONAtomic(path string, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
