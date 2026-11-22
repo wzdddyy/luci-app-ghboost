@@ -760,7 +760,6 @@ stop_service() {
 	remove_firewall
 	remove_dnsmasq
 	untrust_router_ca
-	rm -f "$STATS_FILE" "$CFG_STATE" "$RUNTIME" "$DNSCHECK_FILE"
 
 	local i=0
 	while [ "$i" -lt 6 ] && [ -n "$(ghboost_pids)" ]; do
@@ -772,6 +771,8 @@ stop_service() {
 		gl "进程没退, 强制 KILL: $pids"
 		kill -9 $pids 2>/dev/null || true
 	fi
+
+	rm -f "$STATS_FILE" "$CFG_STATE" "$RUNTIME" "$DNSCHECK_FILE"
 
 	gl "stop_service 完成, pid=$(ghboost_pids | tr '\n' ' ')"
 }
