@@ -8,7 +8,7 @@ LISTEN_PORT=18443
 DNS_UPSTREAM_DEFAULT="https://dns.alidns.com/dns-query,https://doh.pub/dns-query"
 DNS_UPSTREAM=$DNS_UPSTREAM_DEFAULT
 DOMAINS=/usr/share/ghboost/domains.conf
-FAKE_CIDR=100.64.0.0/24
+FAKE_CIDR=198.51.100.0/24
 
 CA_CERT=/etc/ghboost/ghboost-ca.crt
 CA_KEY=/etc/ghboost/ghboost-ca.key
@@ -158,22 +158,15 @@ route_conflict() {
 }
 
 auto_fake_cidr() {
-	local o3=64 cand
-	while [ "$o3" -le 127 ]; do
-		cand="100.$o3.0"
-		o3=$((o3 + 1))
+	local cand gw
+	for cand in 198.51.100 203.0.113 192.0.2; do
+		gw="$cand.1"
 		addr_conflict "$cand" && continue
-		route_conflict "$cand.1" && continue
+		route_conflict "$gw" && continue
 		echo "$cand.0/24"
 		return 0
 	done
-	for cand in 198.18.0 198.19.0; do
-		addr_conflict "$cand" && continue
-		route_conflict "$cand.1" && continue
-		echo "$cand.0/24"
-		return 0
-	done
-	echo "100.64.0.0/24"
+	echo "198.51.100.0/24"
 }
 
 auto_max_conns() {
@@ -198,9 +191,8 @@ auto_max_conns() {
 }
 
 prepare_domains() {
-	local src="$1" pfx pfx2 tmp
+	local src="$1" pfx tmp
 	pfx="$(printf '%s' "${FAKE_CIDR%/*}" | cut -d. -f1-3)"
-	pfx2="$(printf '%s' "${FAKE_CIDR%/*}" | cut -d. -f1-2)"
 	case "$pfx" in
 	100.64.0)
 		DOMAINS="$src"
@@ -209,9 +201,9 @@ prepare_domains() {
 	esac
 
 	tmp=/tmp/ghboost.domains.conf
-	awk -v p="$pfx2" '
+	awk -v p="$pfx" '
 		/^[[:space:]]*#/ { print; next }
-		NF >= 2 && $1 ~ /^100\.64\./ { sub(/^100\.64\./, p "."); print; next }
+		NF >= 2 && $1 ~ /^100\.64\.[0-9]+\./ { sub(/^100\.64\.[0-9]+\./, p "."); print; next }
 		{ print }
 	' "$src" > "$tmp" 2>/dev/null || return 0
 	[ -s "$tmp" ] || return 0
@@ -219,15 +211,29 @@ prepare_domains() {
 	gl "fake_cidr=$FAKE_CIDR 与默认映射文件不同, 已生成运行时映射 $tmp"
 }
 
+fake_cidr_conflict() {
+	local pfx gw o1 o2
+	pfx="$(printf '%s' "${FAKE_CIDR%/*}" | cut -d. -f1-3)"
+	gw="$pfx.1"
+	addr_conflict "$pfx" && return 0
+	route_conflict "$gw" && return 0
+	o1="${FAKE_CIDR%%.*}"
+	o2="$(printf '%s' "$FAKE_CIDR" | cut -d. -f2)"
+	if [ -e /sys/class/net/tailscale0 ] && [ "$o1" = 100 ] && [ "$o2" -ge 64 ] && [ "$o2" -le 127 ]; then
+		return 0
+	fi
+	return 1
+}
+
 apply_auto_config() {
 	local auto_cidr free_port
 
 	refresh_ip_addrs
 
-	if [ "$CIDR_USER" = 0 ]; then
+	if [ "$CIDR_USER" = 0 ] || fake_cidr_conflict; then
 		auto_cidr="$(auto_fake_cidr)"
 		if [ "$auto_cidr" != "$FAKE_CIDR" ]; then
-			gl "fake IP 网段 $FAKE_CIDR 与本机地址或路由冲突, 自动改用 $auto_cidr"
+			gl "fake IP 段冲突: $FAKE_CIDR, 自动改用 $auto_cidr"
 		fi
 		FAKE_CIDR="$auto_cidr"
 	fi
@@ -549,7 +555,7 @@ remove_firewall() {
 	[ -n "$backend" ] || backend="$(fw_backend)"
 
 	if [ "$added" = 1 ]; then
-		ip route del "$fake" dev lo 2>/dev/null || true
+		ip route del "$fake" dev lo 2>/dev/null || ip route del "$fake" 2>/dev/null || true
 	fi
 
 	case "$backend" in
