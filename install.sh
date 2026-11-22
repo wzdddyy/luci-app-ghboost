@@ -17,29 +17,53 @@ die() { printf '错误: %s\n' "$*" >&2; exit 1; }
 if command -v opkg >/dev/null 2>&1; then
 	MGR=opkg
 	EXT=ipk
-	ARCH=$(opkg print-architecture | awk '!/all|noarch/{a=$2}END{print a}')
 elif command -v apk >/dev/null 2>&1; then
 	MGR=apk
 	EXT=apk
-	ARCH=$(apk --print-arch)
 else
 	die "未检测到 opkg 或 apk，本脚本仅适用于 OpenWrt"
 fi
 
-[ -n "$ARCH" ] || die "无法识别设备架构"
+pkg_arch_candidates() {
+	if [ -r /etc/openwrt_release ]; then
+		sed -n "s/^DISTRIB_ARCH=['\"]*\([^'\"]*\)['\"]*$/\1/p" /etc/openwrt_release | head -n1
+	fi
+	if [ -r /etc/apk/arch ]; then
+		head -n1 /etc/apk/arch
+	fi
+	if [ -r /lib/apk/db/installed ]; then
+		sed -n 's/^A://p' /lib/apk/db/installed | sort | uniq -c | sort -rn | head -n1 | awk '{print $2}'
+	elif [ -r /usr/lib/apk/db/installed ]; then
+		sed -n 's/^A://p' /usr/lib/apk/db/installed | sort | uniq -c | sort -rn | head -n1 | awk '{print $2}'
+	fi
+	sed -n 's#.*/packages/\([^/]*\)/.*#\1#p' \
+		/etc/apk/repositories /etc/apk/repositories.d/*.list /etc/opkg/distfeeds.conf 2>/dev/null | head -n1
+	if [ "$MGR" = opkg ]; then
+		opkg print-architecture 2>/dev/null | awk '!/all|noarch/{a=$2}END{print a}'
+	else
+		apk --print-arch 2>/dev/null || true
+	fi
+}
+
+CANDIDATES=$(pkg_arch_candidates)
+RAW=$(printf '%s\n' "$CANDIDATES" | head -n1)
+ARCH=$(printf '%s\n' "$CANDIDATES" | awk -v s=" $SUPPORTED " 'index(s, " " $0 " "){print; exit}')
+
+if [ -z "$ARCH" ]; then
+	case "$(uname -m)" in
+	aarch64|arm64) ARCH=aarch64_cortex-a53 ;;
+	x86_64|amd64) ARCH=x86_64 ;;
+	armv7l|armv7) ARCH=arm_cortex-a7_neon-vfpv4 ;;
+	esac
+	if [ -n "$ARCH" ]; then
+		say "未识别到精确架构（检测值: ${RAW:-无}），按 $(uname -m) 选用通用包: $ARCH"
+	fi
+fi
+
+[ -n "$ARCH" ] || die "无法识别设备架构（检测值: ${RAW:-无}），请在 GitHub Issues 反馈 uname -m 输出"
 
 say "包管理器: $MGR"
 say "设备架构: $ARCH"
-
-case " $SUPPORTED " in
-*" $ARCH "*) ;;
-*)
-	say "暂未提供 $ARCH 的预编译包。"
-	say "已支持: $SUPPORTED"
-	say "请改用源码编译安装，或在 GitHub Issues 反馈该架构。"
-	exit 1
-	;;
-esac
 
 CORE="ghboost_${ARCH}.${EXT}"
 UI="luci-app-ghboost_all.${EXT}"
