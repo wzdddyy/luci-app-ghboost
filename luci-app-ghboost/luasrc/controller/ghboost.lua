@@ -252,11 +252,13 @@ function act_status()
 	end
 
 	e.version_core = nil
-	if e.stats and type(e.stats.version) == "string" and e.stats.version ~= "" and e.stats.version ~= "dev" then
-		e.version_core = e.stats.version
-	end
-	if not e.version_core then
-		e.version_core = pkgVersion("ghboost")
+	if e.binary ~= "missing" then
+		if e.stats and type(e.stats.version) == "string" and e.stats.version ~= "" and e.stats.version ~= "dev" then
+			e.version_core = e.stats.version
+		end
+		if not e.version_core then
+			e.version_core = pkgVersion("ghboost")
+		end
 	end
 	e.version_ui = pkgVersion("luci-app-ghboost")
 
