@@ -226,11 +226,12 @@
         var st = d.stats || {};
         $("gh-domains").textContent = st.domains != null ? st.domains : "--";
         $("gh-uptime").textContent = d.running ? fmtUptime(st.uptime_sec) : "--";
-        $("gh-version").textContent = d.version_core || d.version_ui
-            ? "v" + (d.version_core || "--") + " / v" + (d.version_ui || "--")
-            : "--";
+        var coreVer = d.version_core ? "v" + d.version_core
+            : (d.binary === "missing" ? "未安装" : "--");
+        $("gh-version").textContent = coreVer + " / v" + (d.version_ui || "--");
         $("gh-version").setAttribute("title",
-            "核心 " + (d.version_core ? "v" + d.version_core : "未知") +
+            "核心 " + (d.version_core ? "v" + d.version_core
+                : (d.binary === "missing" ? "未安装" : "未知")) +
             " / UI " + (d.version_ui ? "v" + d.version_ui : "未知"));
 
         $("gh-active").innerHTML = st.active_conns != null
