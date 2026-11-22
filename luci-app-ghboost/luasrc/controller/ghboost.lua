@@ -239,14 +239,16 @@ function act_status()
 		end
 	end
 
-	local rawStats = fs.readfile(STATS_FILE)
-	if rawStats then
-		local ok, parsed = pcall(jsonc.parse, rawStats)
-		if ok and type(parsed) == "table" then
-			e.stats = parsed
-			local mtime = fs.stat(STATS_FILE, "mtime")
-			if mtime then
-				e.stats_age = os.time() - mtime
+	if e.running then
+		local rawStats = fs.readfile(STATS_FILE)
+		if rawStats then
+			local ok, parsed = pcall(jsonc.parse, rawStats)
+			if ok and type(parsed) == "table" then
+				e.stats = parsed
+				local mtime = fs.stat(STATS_FILE, "mtime")
+				if mtime then
+					e.stats_age = os.time() - mtime
+				end
 			end
 		end
 	end
