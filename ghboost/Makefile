@@ -96,7 +96,7 @@ define Package/ghboost/postrm
 	if uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
 		cidr="$$(sed -n 's/^cidr=//p' /tmp/ghboost.runtime 2>/dev/null)"
 		[ -n "$$cidr" ] || cidr="$$(uci -q get ghboost.main.fake_cidr 2>/dev/null)"
-		[ -n "$$cidr" ] || cidr="100.64.0.0/24"
+		[ -n "$$cidr" ] || cidr="198.51.100.0/24"
 		pfx="$$(printf '%s' "$$cidr" | cut -d/ -f1 | cut -d. -f1-3)"
 		changed=0
 		for rule in $$(uci -q get dhcp.@dnsmasq[0].address 2>/dev/null | tr ' ' '\n' | grep -F "/$$pfx."); do
