@@ -1,0 +1,61 @@
+name: 使用帮助
+description: 安装、配置、CA 证书等使用问题。提问前请先查阅 README 常见问题。
+title: "[使用帮助] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 提问前请先确认
+        - 已阅读 [README](https://github.com/wzdddyy/luci-app-ghboost#readme)，尤其是「快速安装」「客户端安装 CA」「常见问题」
+        - 已搜索过 [现有 Issues](https://github.com/wzdddyy/luci-app-ghboost/issues?q=is%3Aissue)，避免重复
+        - 日志和截图中不包含密码、密钥等敏感信息
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 需要帮助的问题
+      description: 说清楚你做了什么、卡在哪一步
+      placeholder: |
+        示例：执行安装脚本后 LuCI 里找不到「黑猫加速」菜单
+        示例：Windows 客户端导入 CA 后仍提示证书不受信任
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## 环境与日志
+        在路由器上依次执行下列命令，复制输出粘贴到下方输入框：
+
+        ```sh
+        cat /etc/openwrt_release
+        ghboost -version
+        /etc/init.d/ghboost restart
+        tail -n 80 /tmp/ghboost.log
+        cat /tmp/ghboost.runtime
+        ```
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 环境与日志
+      description: 粘贴上面命令的输出（没有异常可留空）
+      render: shell
+      placeholder: 在此粘贴命令输出
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图或补充信息
+      description: 可直接拖入截图；安装了其他 DNS/代理类插件也请说明
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认项
+      options:
+        - label: 我已阅读 README 并搜索过现有 Issues
+          required: true
+        - label: 我已确认日志和截图中不含敏感信息
+          required: true

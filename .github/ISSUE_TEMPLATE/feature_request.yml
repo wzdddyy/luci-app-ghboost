@@ -1,0 +1,32 @@
+name: 建议意见
+description: 对功能、界面、文档的改进建议。
+title: "[建议意见] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提建议前请先搜索 [现有 Issues](https://github.com/wzdddyy/luci-app-ghboost/issues?q=is%3Aissue)，避免重复。
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议内容
+      description: 你希望增加或改进什么
+      placeholder: |
+        示例：状态页希望显示每个域名的最近一次选路耗时
+        示例：安装脚本希望支持指定版本
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: 使用场景与期望效果
+      description: 为什么需要它，能解决什么问题
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 参考链接、截图等（可留空）

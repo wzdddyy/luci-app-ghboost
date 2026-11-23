@@ -1,0 +1,61 @@
+name: BUG反馈
+description: 报告 ghboost 使用中的异常。请填写问题现象、环境和日志，便于快速定位。
+title: "[BUG反馈] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 提交前请先确认
+        - 已阅读 [README 常见问题](https://github.com/wzdddyy/luci-app-ghboost#常见问题)
+        - 已搜索过 [现有 Issues](https://github.com/wzdddyy/luci-app-ghboost/issues?q=is%3Aissue)，避免重复
+        - 日志和截图中不包含密码、密钥等敏感信息
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 仔细描述实际遇到的问题
+      placeholder: |
+        示例：页面一直加载不出来,或加载缓慢
+        示例：插件运行时某插件无法访问github
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## 环境与日志
+        在路由器上依次执行下列命令，复制输出粘贴到下方输入框：
+
+        ```sh
+        cat /etc/openwrt_release
+        ghboost -version
+        /etc/init.d/ghboost restart
+        tail -n 80 /tmp/ghboost.log
+        cat /tmp/ghboost.runtime
+        ```
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 环境与日志
+      description: 粘贴上面命令的输出（没有异常可留空）
+      render: shell
+      placeholder: 在此粘贴命令输出
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图或补充信息
+      description: 可直接拖入截图；安装了其他 DNS/代理类插件也请说明
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认项
+      options:
+        - label: 我已阅读 README 常见问题，并搜索过现有 Issues
+          required: true
+        - label: 我已确认日志和截图中不含敏感信息
+          required: true

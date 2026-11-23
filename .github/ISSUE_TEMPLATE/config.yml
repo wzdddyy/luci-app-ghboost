@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用文档 / 常见问题
+    url: https://github.com/wzdddyy/luci-app-ghboost#readme
+    about: 安装、CA 证书、53 端口占用等问题请先查阅 README。
