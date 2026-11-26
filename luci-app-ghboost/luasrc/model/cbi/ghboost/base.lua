@@ -1,6 +1,6 @@
 local m, s
 
-m = Map("ghboost", translate("黑猫加速"))
+m = Map("ghboost", translate("GitHub加速"))
 
 s = m:section(SimpleSection)
 s:append(Template("ghboost/style"))
