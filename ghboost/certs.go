@@ -33,6 +33,8 @@ func NewCertStore(certPath, keyPath string) (*CertStore, error) {
 	if certPath != "" && keyPath != "" {
 		if err := s.loadCA(certPath, keyPath); err == nil {
 			return s, nil
+		} else if _, statErr := os.Stat(certPath); statErr == nil {
+			logWarn("已有 CA 无法复用 (%v), 将重新生成", err)
 		}
 	}
 
@@ -40,7 +42,9 @@ func NewCertStore(certPath, keyPath string) (*CertStore, error) {
 		return nil, err
 	}
 	if certPath != "" && keyPath != "" {
-		_ = s.saveCA(certPath, keyPath)
+		if err := s.saveCA(certPath, keyPath); err != nil {
+			logWarn("CA 持久化到 %s 失败: %v (仅内存可用, 路由器本机信任会失败)", certPath, err)
+		}
 	}
 	return s, nil
 }
@@ -119,10 +123,26 @@ func (s *CertStore) saveCA(certPath, keyPath string) error {
 		return err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(certPath, s.caCertPEM, 0o644); err != nil {
+	if err := writeFileAtomic(keyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("写入 CA 私钥失败: %w", err)
+	}
+	return writeFileAtomic(certPath, s.caCertPEM, 0o644)
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
 		return err
 	}
-	return os.WriteFile(keyPath, keyPEM, 0o600)
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (s *CertStore) GetLeafCert(domain string) (*tls.Certificate, error) {

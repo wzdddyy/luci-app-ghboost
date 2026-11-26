@@ -23,6 +23,7 @@ LOG_FILE=/tmp/ghboost.log
 LOG_MAX=2097152
 CFG_STATE=/tmp/ghboost.cfg.state
 RUNTIME=/tmp/ghboost.runtime
+GUARD_PID=/tmp/ghboost.guard.pid
 DNSCHECK_FILE=/tmp/ghboost.dnscheck
 
 TZ_NAME="$(uci -q get system.@system[0].zonename 2>/dev/null)"
@@ -629,23 +630,56 @@ trust_router_ca() {
 	gl "ghboost CA 已加入路由器信任库 $CA_BUNDLE"
 }
 
-trust_router_ca_bg() {
+wait_ca() {
+	local i=0
+	while { [ ! -s "$CA_CERT" ] || [ ! -s "$CA_KEY" ]; } && [ "$i" -lt 50 ]; do
+		sleep 0.1 2>/dev/null || sleep 1
+		i=$((i + 1))
+	done
+	[ -s "$CA_CERT" ] && [ -s "$CA_KEY" ]
+}
+
+ca_fp() {
+	[ -s "$CA_CERT" ] || return 1
+	md5sum "$CA_CERT" 2>/dev/null | awk '{print $1}'
+}
+
+guard_stop() {
+	local pid
+	[ -f "$GUARD_PID" ] || return 0
+	pid="$(cat "$GUARD_PID" 2>/dev/null)"
+	[ -n "$pid" ] && kill "$pid" 2>/dev/null
+	rm -f "$GUARD_PID"
+}
+
+trust_guard() {
+	guard_stop
 	(
-		local i=0
-		while [ ! -s "$CA_CERT" ] && [ "$i" -lt 120 ]; do
+		local i=0 fp="" cur
+		while [ "$i" -lt 120 ] && { [ ! -s "$CA_CERT" ] || [ ! -s "$CA_KEY" ]; }; do
 			sleep 1
 			i=$((i + 1))
 		done
-		pidof ghboost >/dev/null 2>&1 || return 0
+		fp="$(ca_fp)" || return 0
 		[ -f "$RUNTIME" ] || return 0
 		trust_router_ca
+		while [ -f "$RUNTIME" ]; do
+			sleep 30
+			[ -f "$RUNTIME" ] || break
+			cur="$(ca_fp)" || continue
+			[ "$cur" = "$fp" ] && continue
+			fp="$cur"
+			trust_router_ca
+		done
 	) >/dev/null 2>&1 &
+	echo $! > "$GUARD_PID" 2>/dev/null
 }
 
 start_service() {
 	load_config
 	if [ "$ENABLED" != "1" ]; then
 		/etc/init.d/ghboost disable 2>/dev/null
+		guard_stop
 		untrust_router_ca
 		gl "配置已禁用，不启动服务"
 		return 0
@@ -662,9 +696,6 @@ start_service() {
 	mkdir -p "$(dirname "$CA_CERT")" 2>/dev/null
 
 	gl "start_service 开始, fake=$FAKE_CIDR port=$LISTEN_PORT max_conns=$MAX_CONNS"
-	if ! setup_firewall; then
-		return 1
-	fi
 
 	write_runtime
 	printf '%s\n' "$CFG_FP" > "$CFG_STATE" 2>/dev/null
@@ -688,10 +719,25 @@ start_service() {
 	procd_set_param stderr 1
 	procd_close_instance
 
+	if wait_ca; then
+		trust_router_ca
+	else
+		gl "WARN: 等待 $CA_CERT 超时, 交由后台看守继续跟进信任"
+	fi
+	trust_guard
+
+	if ! setup_firewall; then
+		guard_stop
+		ubus call service delete '{"name":"ghboost"}' >/dev/null 2>&1 || true
+		local pids
+		pids="$(ghboost_pids)"
+		[ -n "$pids" ] && kill -TERM $pids 2>/dev/null
+		rm -f "$RUNTIME" "$CFG_STATE"
+		return 1
+	fi
+
 	setup_dnsmasq
 	verify_dnsmasq
-
-	trust_router_ca_bg
 }
 
 cfg_fingerprint() {
@@ -749,6 +795,7 @@ stop_service() {
 	gl "stop_service 开始, pid=$(ghboost_pids | tr '\n' ' ')"
 
 	ubus call service delete '{"name":"ghboost"}' >/dev/null 2>&1 || true
+	guard_stop
 
 	local pids
 	pids="$(ghboost_pids)"
