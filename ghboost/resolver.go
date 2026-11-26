@@ -312,7 +312,7 @@ func (r *resolver) lookup(domain string, depth int) ([]string, uint32, error) {
 			if minTTL == 0 || ttl < minTTL {
 				minTTL = ttl
 			}
-			logThrottled("cname-"+domain, "%s 只有 CNAME, 按 %s 的解析结果使用", domain, cn)
+			logThrottled("cname-"+domain, "%s 仅有 CNAME, 按 %s 的解析结果处理", domain, cn)
 		}
 	}
 

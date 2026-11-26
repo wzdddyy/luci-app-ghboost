@@ -225,7 +225,7 @@ func (p *Proxy) Start() error {
 	p.server = ln
 
 	p.loadBest()
-	logInfo("ghboost 启动: 监听 %s, fake IP 映射 %d 条, 并发上限 %d",
+	logInfo("ghboost 已启动: 监听 %s, fake IP 映射 %d 条, 并发上限 %d",
 		p.cfg.Listen, p.domainCount(), p.cfg.MaxConns)
 
 	p.spawn(p.acceptLoop)
@@ -263,7 +263,7 @@ func (p *Proxy) Stop() {
 	case <-done:
 		logInfo("ghboost 已停止")
 	case <-time.After(3 * time.Second):
-		logWarn("ghboost 停止超时: 还有活跃连接, 不再等待")
+		logWarn("ghboost 停止超时: 仍有活跃连接, 不再等待")
 	}
 }
 
@@ -333,7 +333,7 @@ func (p *Proxy) handleConn(client *net.TCPConn) {
 	if probed && !anyOK {
 		budget = dialFastBudget
 		logThrottled("probe-dead-"+domain,
-			"%s:%d 探测 %v 内没有候选建连成功, 重试预算缩短到 %v",
+			"%s:%d 探测 %v 内无候选连接成功, 重试预算缩短至 %v",
 			domain, port, probeWait, budget)
 	}
 
@@ -536,7 +536,7 @@ func (p *Proxy) handleTLS(client net.Conn, domain string, ordered []string, port
 				if bad, why := badResponse(domain, head); bad {
 					p.recordDial(domain, ip, 0, errors.New(why))
 					dialErrs = append(dialErrs, ip+": "+why)
-					logThrottled("bad-upstream-"+domain, "%s:%s 上游 %s %s, 换下一个", domain, portStr, ip, why)
+					logThrottled("bad-upstream-"+domain, "%s:%s 上游 %s %s, 切换下一候选", domain, portStr, ip, why)
 					upstreamTLS.Close()
 					continue
 				}
@@ -1430,7 +1430,7 @@ func (p *Proxy) dropFakeIPs(ips []string) []string {
 	}
 	if dropped > 0 {
 		logThrottled("fake-upstream",
-			"DNS 上游返回 %d 个 fake IP, 已丢弃: 上游是本机 dnsmasq", dropped)
+			"DNS 上游返回 %d 个 fake IP, 已丢弃 (上游为本机 dnsmasq)", dropped)
 	}
 	if bogus > 0 {
 		logThrottled("bogus-upstream",
@@ -1760,7 +1760,7 @@ func (p *Proxy) probeDomains(doms []string) int64 {
 		}
 		ips = p.dropFakeIPs(p.withExtra(d, ips))
 		if len(ips) > 0 && !anyIPv4(ips) {
-			logThrottled("warm-v6-"+d, "%s 只解析到 IPv6 %s", d, ips[0])
+			logThrottled("warm-v6-"+d, "%s 仅解析到 IPv6 %s", d, ips[0])
 		}
 		for i, ip := range ips {
 			if i >= warmupProbeCount {

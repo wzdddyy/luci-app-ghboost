@@ -88,10 +88,10 @@ func main() {
 	if *logFile != "" {
 		rf, err := newRotatingFile(*logFile, 1<<20)
 		if err != nil {
-			logWarn("无法打开日志文件 %s: %v, 改用 syslog", *logFile, err)
+			logWarn("无法打开日志文件 %s (%v), 已回退到 syslog", *logFile, err)
 		} else {
 			log.SetOutput(rf)
-			logInfo("日志写入 %s, 上限 1MB, 超出后转存 .1", *logFile)
+			logInfo("日志输出到 %s, 单文件上限 1MB, 超出后轮转为 .1", *logFile)
 		}
 	}
 
@@ -100,7 +100,7 @@ func main() {
 		log.Fatal("[ERROR] 加载域名映射失败: ", err)
 	}
 	if domTable.len() == 0 {
-		log.Fatal("[ERROR] 域名映射为空, 检查 ", *domains)
+		log.Fatal("[ERROR] 域名映射为空, 请检查 ", *domains)
 	}
 
 	res, err := newResolver(*dns)
@@ -110,7 +110,7 @@ func main() {
 
 	certs, err := NewCertStore(*caCert, *caKey)
 	if err != nil {
-		logWarn("CA 证书初始化失败: %v, 将回退到明文中转模式 (不稳定)", err)
+		logWarn("CA 证书初始化失败: %v, 将回退到明文中转模式", err)
 		certs = nil
 	} else {
 		logInfo("CA 证书已就绪: %s", *caCert)

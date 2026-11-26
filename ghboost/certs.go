@@ -34,7 +34,7 @@ func NewCertStore(certPath, keyPath string) (*CertStore, error) {
 		if err := s.loadCA(certPath, keyPath); err == nil {
 			return s, nil
 		} else if _, statErr := os.Stat(certPath); statErr == nil {
-			logWarn("已有 CA 无法复用 (%v), 将重新生成", err)
+			logWarn("现有 CA 无法复用 (%v), 将重新生成", err)
 		}
 	}
 
@@ -43,7 +43,7 @@ func NewCertStore(certPath, keyPath string) (*CertStore, error) {
 	}
 	if certPath != "" && keyPath != "" {
 		if err := s.saveCA(certPath, keyPath); err != nil {
-			logWarn("CA 持久化到 %s 失败: %v (仅内存可用, 路由器本机信任会失败)", certPath, err)
+			logWarn("CA 无法持久化到 %s: %v (仅内存可用, 路由器本机信任将失败)", certPath, err)
 		}
 	}
 	return s, nil

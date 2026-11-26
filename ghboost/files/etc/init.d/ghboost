@@ -209,7 +209,7 @@ prepare_domains() {
 	' "$src" > "$tmp" 2>/dev/null || return 0
 	[ -s "$tmp" ] || return 0
 	DOMAINS="$tmp"
-	gl "fake_cidr=$FAKE_CIDR 与默认映射文件不同, 已生成运行时映射 $tmp"
+	gl "fake_cidr=$FAKE_CIDR 与默认映射文件不一致, 已生成运行时映射 $tmp"
 }
 
 fake_cidr_conflict() {
@@ -234,7 +234,7 @@ apply_auto_config() {
 	if [ "$CIDR_USER" = 0 ] || fake_cidr_conflict; then
 		auto_cidr="$(auto_fake_cidr)"
 		if [ "$auto_cidr" != "$FAKE_CIDR" ]; then
-			gl "fake IP 段冲突: $FAKE_CIDR, 自动改用 $auto_cidr"
+			gl "fake IP 网段冲突: $FAKE_CIDR, 已自动切换为 $auto_cidr"
 		fi
 		FAKE_CIDR="$auto_cidr"
 	fi
@@ -244,7 +244,7 @@ apply_auto_config() {
 
 	free_port="$(find_free_port "$LISTEN_PORT")"
 	if [ "$free_port" != "$LISTEN_PORT" ]; then
-		gl "端口 $LISTEN_PORT 已被占用, 自动改用 $free_port"
+		gl "端口 $LISTEN_PORT 已被占用, 已自动切换为 $free_port"
 	fi
 	LISTEN_PORT="$free_port"
 
@@ -284,7 +284,7 @@ check_fake_conflict() {
 	p1="${FAKE_CIDR%%.*}"
 	p2="$(printf '%s' "$FAKE_CIDR" | cut -d. -f2)"
 	if ip_addrs | grep -qE "inet ${p1}\.${p2}\."; then
-		gl "WARN: 本机接口地址落在 fake_cidr=$FAKE_CIDR 段内, 可能冲突"
+		gl "WARN: 本机接口地址位于 fake_cidr=$FAKE_CIDR 网段内, 存在冲突风险"
 	fi
 }
 
@@ -322,7 +322,7 @@ build_dnsmasq_rules() {
 	if aaaa_rule_supported; then
 		awk '!/^[[:space:]]*#/ && NF>=2 {print "/"$2"/::"}' "$DOMAINS" 2>/dev/null
 	else
-		gl "WARN: 当前 dnsmasq 不支持 address=/domain/:: , 跳过 AAAA 抑制"
+		gl "WARN: 当前 dnsmasq 不支持 address=/domain/:: , 已跳过 AAAA 抑制"
 	fi
 }
 
@@ -330,7 +330,7 @@ setup_dnsmasq() {
 	local rule new_rules cur_rules
 
 	if ! uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
-		gl "FAIL: 找不到 dhcp.@dnsmasq[0], 无法下发 fake IP 应答"
+		gl "FAIL: 未找到 dhcp.@dnsmasq[0], 无法下发 fake IP 应答"
 		return 0
 	fi
 
@@ -339,7 +339,7 @@ setup_dnsmasq() {
 	cur_rules="$(dnsmasq_our_rules)"
 
 	if [ "$new_rules" = "$cur_rules" ]; then
-		gl "dnsmasq 规则未变化, 跳过重载"
+		gl "dnsmasq 规则无变化, 已跳过重载"
 		ensure_dhcp_force
 		return 0
 	fi
@@ -402,7 +402,7 @@ reload_dnsmasq() {
 		sleep 0.2 2>/dev/null || sleep 1
 	done
 	if [ "$locked" = 0 ]; then
-		gl "WARN: 等 dnsmasq 锁超时, 强制接管"
+		gl "WARN: 等待 dnsmasq 锁超时, 已强制接管"
 		rmdir "$DNSMASQ_LOCK" 2>/dev/null
 		mkdir "$DNSMASQ_LOCK" 2>/dev/null && locked=1
 	fi
@@ -416,7 +416,7 @@ reload_dnsmasq() {
 			[ "$locked" = 1 ] && rmdir "$DNSMASQ_LOCK" 2>/dev/null
 			return 0
 		fi
-		gl "WARN: dnsmasq reload 后 dhcp-range 丢失, 改用 stop/start 修复"
+		gl "WARN: dnsmasq reload 后 dhcp-range 丢失, 已改用 stop/start 修复"
 		rm -f $DNSMASQ_STAMP_GLOB 2>/dev/null
 	fi
 
@@ -433,15 +433,15 @@ reload_dnsmasq() {
 	sleep 1
 
 	if dhcp_expected && ! dhcp_range_ok; then
-		gl "WARN: dnsmasq 启动后配置里没有 dhcp-range, 清缓存再重启一次"
+		gl "WARN: dnsmasq 启动后配置中缺少 dhcp-range, 已清理缓存并重新启动"
 		rm -f $DNSMASQ_STAMP_GLOB 2>/dev/null
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1
 		sleep 1
 		if dhcp_range_ok; then
-			gl "dnsmasq 的 DHCP 已恢复正常"
+			gl "dnsmasq 的 DHCP 功能已恢复正常"
 		else
-			gl "FAIL: dnsmasq 仍没有 dhcp-range, 客户端会拿不到 IP;"
-			gl "      检查 /etc/config/dhcp 里 lan 的 force 选项, 或手动 /etc/init.d/dnsmasq restart"
+			gl "FAIL: dnsmasq 配置中仍缺少 dhcp-range, 客户端将无法获取 IP"
+			gl "      请检查 /etc/config/dhcp 中 lan 的 force 选项, 或手动执行 /etc/init.d/dnsmasq restart"
 		fi
 	fi
 
@@ -454,7 +454,7 @@ remove_dnsmasq() {
 	rules="$(dnsmasq_our_rules)"
 
 	if [ -z "$rules" ]; then
-		gl "没有需要移除的 fake IP 规则, 跳过 dnsmasq 重载"
+		gl "无需移除 fake IP 规则, 已跳过 dnsmasq 重载"
 		return 0
 	fi
 
@@ -468,7 +468,7 @@ remove_dnsmasq() {
 	rm -f "$batch"
 	uci -q commit dhcp
 	reload_dnsmasq
-	gl "dnsmasq fake IP 规则已移除"
+	gl "已移除 dnsmasq 的 fake IP 规则"
 }
 
 verify_dnsmasq() {
@@ -476,11 +476,11 @@ verify_dnsmasq() {
 	dom="github.com"
 	ip="$(awk '$2=="github.com"{print $1; exit}' "$DOMAINS" 2>/dev/null)"
 	if [ -z "$ip" ]; then
-		gl "WARN: $DOMAINS 里没有 github.com, 跳过解析自检"
+		gl "WARN: $DOMAINS 中未找到 github.com, 已跳过解析自检"
 		return 0
 	fi
 	if ! command -v nslookup >/dev/null 2>&1; then
-		gl "WARN: 系统没有 nslookup, 跳过解析自检"
+		gl "WARN: 系统未安装 nslookup, 已跳过解析自检"
 		return 0
 	fi
 	if command -v timeout >/dev/null 2>&1; then
@@ -491,7 +491,7 @@ verify_dnsmasq() {
 	if printf '%s' "$out" | grep -qF "$ip"; then
 		gl "解析自检通过: $dom -> $ip"
 	else
-		gl "WARN: 解析自检失败, 向 127.0.0.1 查 $dom 没拿到 $ip; 检查 dnsmasq 是否加载了规则、53 端口是否被其它程序占用"
+		gl "WARN: 解析自检失败: 向 127.0.0.1 查询 $dom 未返回 $ip; 请检查 dnsmasq 规则是否已加载、53 端口是否被其他进程占用"
 	fi
 	return 0
 }
@@ -511,14 +511,14 @@ setup_firewall() {
 	backend="$(fw_backend)"
 
 	if [ "$backend" = none ]; then
-		gl "系统里既没有 nft 也没有 iptables, 无法下发重定向规则"
+		gl "FAIL: 未识别到可用的防火墙后端 (nft/iptables), 无法下发重定向规则"
 		return 1
 	fi
 
 	if ip route show "$FAKE_CIDR" 2>/dev/null | grep -q "^$FAKE_CIDR dev lo"; then
 		route_added=1
 	elif ip route show "$FAKE_CIDR" 2>/dev/null | grep -q .; then
-		gl "WARN: $FAKE_CIDR 已存在其它路由, 本机命令可能不经过 ghboost"
+		gl "WARN: $FAKE_CIDR 已存在其他路由, 本机命令可能不经过 ghboost"
 	elif ip route add "$FAKE_CIDR" dev lo 2>/dev/null; then
 		route_added=1
 	fi
@@ -591,7 +591,7 @@ untrust_router_ca() {
 		!skip
 	' "$CA_BUNDLE" > "$tmp" 2>/dev/null; then
 		rm -f "$tmp"
-		gl "WARN: 重写 $CA_BUNDLE 失败, 跳过移除"
+		gl "WARN: 重写 $CA_BUNDLE 失败, 已跳过移除"
 		return 0
 	fi
 	cat "$tmp" > "$CA_BUNDLE" 2>/dev/null || gl "WARN: 写回 $CA_BUNDLE 失败"
@@ -603,7 +603,7 @@ trust_router_ca() {
 	local key i=0
 
 	if [ ! -f "$CA_BUNDLE" ]; then
-		gl "WARN: 没有 $CA_BUNDLE (ca-bundle 未安装), 跳过路由器本机证书信任"
+		gl "WARN: 未找到 $CA_BUNDLE (ca-bundle 未安装), 已跳过路由器本机证书信任"
 		return 0
 	fi
 
@@ -612,12 +612,12 @@ trust_router_ca() {
 		i=$((i + 1))
 	done
 	if [ ! -s "$CA_CERT" ]; then
-		gl "WARN: $CA_CERT 未生成, 跳过路由器本机证书信任"
+		gl "WARN: $CA_CERT 尚未生成, 已跳过路由器本机证书信任"
 		return 0
 	fi
 
 	key="$(awk 'length($0) > 40 && $0 !~ /-----/ { print; exit }' "$CA_CERT" 2>/dev/null | tr -d '\r ')"
-	[ -n "$key" ] || { gl "WARN: 读不出 $CA_CERT 的证书内容, 跳过路由器本机证书信任"; return 0; }
+	[ -n "$key" ] || { gl "WARN: 无法读取 $CA_CERT 的证书内容, 已跳过路由器本机证书信任"; return 0; }
 	if grep -qF "$key" "$CA_BUNDLE" 2>/dev/null; then
 		return 0
 	fi
@@ -681,11 +681,11 @@ start_service() {
 		/etc/init.d/ghboost disable 2>/dev/null
 		guard_stop
 		untrust_router_ca
-		gl "配置已禁用，不启动服务"
+		gl "服务未启用, 已跳过启动"
 		return 0
 	fi
 	if [ ! -x "$PROG" ]; then
-		gl "FAIL: $PROG 不存在或不可执行 —— 核心包 ghboost 没装, 服务无法启动"
+		gl "FAIL: $PROG 不存在或不可执行: 核心包 ghboost 未安装, 服务无法启动"
 		return 1
 	fi
 	[ -e /etc/rc.d/S99ghboost ] || /etc/init.d/ghboost enable 2>/dev/null
@@ -695,7 +695,7 @@ start_service() {
 
 	mkdir -p "$(dirname "$CA_CERT")" 2>/dev/null
 
-	gl "start_service 开始, fake=$FAKE_CIDR port=$LISTEN_PORT max_conns=$MAX_CONNS"
+	gl "开始启动服务: fake=$FAKE_CIDR port=$LISTEN_PORT max_conns=$MAX_CONNS"
 
 	write_runtime
 	printf '%s\n' "$CFG_FP" > "$CFG_STATE" 2>/dev/null
@@ -722,7 +722,7 @@ start_service() {
 	if wait_ca; then
 		trust_router_ca
 	else
-		gl "WARN: 等待 $CA_CERT 超时, 交由后台看守继续跟进信任"
+		gl "WARN: 等待 $CA_CERT 就绪超时, 已转由后台进程继续完成信任"
 	fi
 	trust_guard
 
@@ -753,18 +753,18 @@ reload_service() {
 	[ -n "$(ghboost_pids)" ] && running=1
 
 	if [ "$ENABLED" != "1" ] && [ "$running" = 1 ]; then
-		gl "配置已禁用 服务运行中，开始停止服务"
+		gl "服务已禁用且正在运行, 开始停止服务"
 		stop_service
 		return 0
 	fi
 
 	if [ "$running" = 0 ]; then
 		if [ "$ENABLED" = "1" ]; then
-			gl "配置已启用 服务未运行，开始启动服务"
+			gl "服务已启用且未运行, 开始启动服务"
 			rc_procd start_service
 			return $?
 		else
-			gl "配置已禁用 服务未运行，仅保存配置"
+			gl "服务已禁用且未运行, 仅保存配置"
 		fi
 		return 0
 	fi
@@ -772,7 +772,7 @@ reload_service() {
 	local prev=""
 	[ -f "$CFG_STATE" ] && prev="$(cat "$CFG_STATE")"
 	if [ "$prev" != "$CFG_FP" ]; then
-		gl "配置变化，重启服务"
+		gl "配置已变更, 正在重启服务"
 		stop_service
 		rc_procd start_service
 		return 0
@@ -786,13 +786,13 @@ reload_service() {
 	local pids
 	pids="$(ghboost_pids)"
 	[ -n "$pids" ] && kill -HUP $pids 2>/dev/null
-	gl "reload 完成"
+	gl "重载完成"
 }
 
 stop_service() {
 	load_config
 	read_runtime
-	gl "stop_service 开始, pid=$(ghboost_pids | tr '\n' ' ')"
+	gl "开始停止服务, pid=$(ghboost_pids | tr '\n' ' ')"
 
 	ubus call service delete '{"name":"ghboost"}' >/dev/null 2>&1 || true
 	guard_stop
@@ -801,7 +801,7 @@ stop_service() {
 	pids="$(ghboost_pids)"
 	if [ -n "$pids" ]; then
 		kill -TERM $pids 2>/dev/null || true
-		gl "等待进程退出: $pids"
+		gl "正在等待进程退出: $pids"
 	fi
 
 	remove_firewall
@@ -815,13 +815,13 @@ stop_service() {
 	done
 	pids="$(ghboost_pids)"
 	if [ -n "$pids" ]; then
-		gl "进程没退, 强制 KILL: $pids"
+		gl "进程未退出, 强制终止: $pids"
 		kill -9 $pids 2>/dev/null || true
 	fi
 
 	rm -f "$STATS_FILE" "$CFG_STATE" "$RUNTIME" "$DNSCHECK_FILE"
 
-	gl "stop_service 完成, pid=$(ghboost_pids | tr '\n' ' ')"
+	gl "服务已停止, pid=$(ghboost_pids | tr '\n' ' ')"
 }
 
 service_triggers() {
@@ -898,7 +898,7 @@ diagnose() {
 		fi
 		;;
 	*)
-		echo "FAIL: 系统里既没有 nft 也没有 iptables"
+		echo "FAIL: 未识别到可用的防火墙后端 (nft/iptables), 无法下发重定向规则"
 		;;
 	esac
 	if ip route show "$FAKE_CIDR" 2>/dev/null | grep -q "^$FAKE_CIDR dev lo"; then
