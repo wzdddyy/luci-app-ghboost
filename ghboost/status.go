@@ -23,9 +23,10 @@ type StatusSnapshot struct {
 	MaxConns  int       `json:"max_conns"`
 	Active    int       `json:"active_conns"`
 	Clients   int       `json:"clients"`
-	OK60   int64 `json:"ok_60s"`
-	Fail60 int64 `json:"fail_60s"`
-	Total  int64 `json:"total"`
+	Warming   bool      `json:"warming"`
+	OK        int64     `json:"ok"`
+	Fail      int64     `json:"fail"`
+	Total     int64     `json:"total"`
 
 	Upstreams []UpstreamStatus `json:"upstreams"`
 	Hosts     []HostStatus     `json:"hosts"`
@@ -53,7 +54,7 @@ type HostStatus struct {
 
 func (p *Proxy) snapshot() StatusSnapshot {
 	now := time.Now()
-	ok60, fail60, total := connStats.recent(now)
+	ok, fail, total := connStats.recent(now)
 
 	s := StatusSnapshot{
 		Version:   statusVersion,
@@ -65,8 +66,9 @@ func (p *Proxy) snapshot() StatusSnapshot {
 		MaxConns:  p.cfg.MaxConns,
 		Active:    len(p.connSem),
 		Clients:   p.clientCount(),
-		OK60:      ok60,
-		Fail60:    fail60,
+		Warming:   p.warming.Load(),
+		OK:        ok,
+		Fail:      fail,
 		Total:     total,
 		Upstreams: p.resolver.Status(),
 		CA:        p.caInfo(),
