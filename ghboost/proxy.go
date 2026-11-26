@@ -162,6 +162,9 @@ type Proxy struct {
 
 	connSem chan struct{}
 
+	clientMu sync.Mutex
+	clients  map[string]int
+
 	statMu sync.Mutex
 	stats  map[string]*ipStat
 
@@ -206,6 +209,7 @@ func NewProxy(cfg ProxyOptions, res *resolver, table *domainTable, certs *CertSt
 		stopCh:   make(chan struct{}),
 		table:    table,
 		connSem:  make(chan struct{}, cfg.MaxConns),
+		clients:  make(map[string]int),
 		stats:    make(map[string]*ipStat),
 		probeAt:  make(map[string]time.Time),
 		dynamic:  make(map[string][]string),
@@ -267,6 +271,44 @@ func (p *Proxy) Stop() {
 	}
 }
 
+func (p *Proxy) addClient(ip string) {
+	p.clientMu.Lock()
+	p.clients[ip]++
+	p.clientMu.Unlock()
+}
+
+func (p *Proxy) removeClient(ip string) {
+	p.clientMu.Lock()
+	if n := p.clients[ip]; n <= 1 {
+		delete(p.clients, ip)
+	} else {
+		p.clients[ip] = n - 1
+	}
+	p.clientMu.Unlock()
+}
+
+func (p *Proxy) clientCount() int {
+	p.clientMu.Lock()
+	n := len(p.clients)
+	p.clientMu.Unlock()
+	return n
+}
+
+func clientIPOf(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() {
+		return ""
+	}
+	return host
+}
+
 func (p *Proxy) acceptLoop() {
 	for {
 		conn, err := p.server.Accept()
@@ -297,6 +339,11 @@ func (p *Proxy) handleConn(client *net.TCPConn) {
 		bumpStat(false)
 		logThrottled("conn-limit", "并发连接已达上限 %d, 拒绝新连接", cap(p.connSem))
 		return
+	}
+
+	if ip := clientIPOf(client.RemoteAddr()); ip != "" {
+		p.addClient(ip)
+		defer p.removeClient(ip)
 	}
 
 	origAddr, err := getOriginalDst(client)
