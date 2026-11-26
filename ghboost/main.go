@@ -91,7 +91,7 @@ func main() {
 			logWarn("无法打开日志文件 %s (%v), 已回退到 syslog", *logFile, err)
 		} else {
 			log.SetOutput(rf)
-			logInfo("日志输出到 %s, 单文件上限 1MB, 超出后轮转为 .1", *logFile)
+			logInfo("日志输出路径: %s", *logFile)
 		}
 	}
 
