@@ -26,10 +26,30 @@
     </div>
 
     <div class="gh-metrics">
-        <div class="gh-metric"><div class="k">活跃连接</div><div class="v" id="gh-active">--</div></div>
-        <div class="gh-metric"><div class="k">近 1 分钟成功</div><div class="v" id="gh-ok">--</div></div>
-        <div class="gh-metric"><div class="k">近 1 分钟失败</div><div class="v" id="gh-fail">--</div></div>
-        <div class="gh-metric"><div class="k">最快延迟</div><div class="v" id="gh-best">--</div></div>
+        <a class="gh-metric gh-metric-link" id="gh-health"
+           href="<%=luci.dispatcher.build_url()%>/admin/services/ghboost/log">
+            <div class="k">健康检查</div>
+            <div class="v" id="gh-health-v">检测中…</div>
+            <div class="s" id="gh-health-sub">--</div>
+        </a>
+        <div class="gh-metric">
+            <div class="k">活跃连接</div>
+            <div class="v" id="gh-active">--</div>
+            <div class="s" id="gh-clients">-- 个客户端</div>
+        </div>
+        <div class="gh-metric">
+            <div class="k">实时解析</div>
+            <div class="v"><span class="gh-ok" id="gh-ok">--</span> <small>/</small> <span class="gh-err" id="gh-fail">--</span></div>
+            <div class="s">
+                <span><i class="gh-sdot ok"></i>成功</span>
+                <span><i class="gh-sdot err"></i>失败</span>
+            </div>
+        </div>
+        <div class="gh-metric">
+            <div class="k">最快延迟</div>
+            <div class="v" id="gh-best">--</div>
+            <div class="s" id="gh-best-host">--</div>
+        </div>
     </div>
 
     <div class="gh-card">
@@ -72,19 +92,16 @@
     }
 
     function serviceState(d) {
-        if (d.binary !== "present") { return { title: "核心文件缺失", sub: "ghboost 核心包未安装或不可执行", cls: "err" }; }
         if (!d.running) {
-            if (d.enabled) { return { title: "启动失败", sub: "已启用但进程未运行，查看日志页排查", cls: "err" }; }
+            if (d.enabled) { return { title: "启动中", sub: "正在启动服务", cls: "warn" }; }
             return { title: "已停止", sub: "打开右上角开关即可启动", cls: "err" };
         }
-        if (!d.tproxy) { return { title: "转发规则未生效", sub: "防火墙规则下发失败", cls: "err" }; }
-        if (d.dnsmasq !== "present") { return { title: "DNS 劫持未生效", sub: "dnsmasq 中没有 fake IP 规则", cls: "err" }; }
-        if (d.dnsmap === "none") { return { title: "缺少 github.com 映射", sub: "检查域名表文件", cls: "err" }; }
-        if (d.dnsmap === "fail") { return { title: "域名解析未生效", sub: "向 DNS 查询未拿到 fake IP", cls: "err" }; }
         var st = d.stats || null;
-        if (st && st.uptime_sec === 0) { return { title: "启动中", sub: "正在初始化转发与预热", cls: "warn" }; }
+        if (!st || st.uptime_sec === 0) {
+            return { title: "启动中", sub: "正在初始化转发与预热", cls: "warn" };
+        }
         var rt = d.runtime || {};
-        var sub = "监听 :" + (rt.port || (d.stats && String(d.stats.listen || "").replace(/^:/, "")) || "--");
+        var sub = "监听 :" + (rt.port || String(st.listen || "").replace(/^:/, "") || "--");
         if (d.dnsmap === "skip") { sub += " · 跳过解析自检"; }
         return { title: "运行中", sub: sub, cls: "ok" };
     }
@@ -234,18 +251,35 @@
                 : (d.binary === "missing" ? "未安装" : "未知")) +
             " / UI " + (d.version_ui ? "v" + d.version_ui : "未知"));
 
-        $("gh-active").innerHTML = st.active_conns != null
-            ? st.active_conns + ' <small>/ ' + (st.max_conns != null ? st.max_conns : (d.runtime && d.runtime.maxconns) || "--") + "</small>"
+        var maxConns = st.max_conns != null ? st.max_conns : (d.runtime && d.runtime.maxconns);
+        $("gh-active").innerHTML = d.running && st.active_conns != null
+            ? st.active_conns + ' <small>/ ' + (maxConns != null && maxConns !== "" ? maxConns : "--") + "</small>"
             : "--";
+        $("gh-clients").textContent = (d.running && st.clients != null ? st.clients : 0) + " 个客户端";
         $("gh-ok").textContent = d.running ? (st.ok_60s != null ? st.ok_60s : "--") : "--";
         $("gh-fail").textContent = d.running ? (st.fail_60s != null ? st.fail_60s : "--") : "--";
 
-        var best = 0;
+        var best = 0, bestHost = "";
         (st.hosts || []).forEach(function(h) {
             if (plainMap[h.domain]) { return; }
-            if (h.best_ms > 0 && (!best || h.best_ms < best)) { best = h.best_ms; }
+            if (h.best_ms > 0 && (!best || h.best_ms < best)) { best = h.best_ms; bestHost = h.domain; }
         });
         $("gh-best").innerHTML = best ? best + " <small>ms</small>" : "--";
+        $("gh-best-host").textContent = bestHost || "暂无数据";
+
+        var healthy = d.health === true;
+        var hv = $("gh-health-v");
+        hv.className = "v " + (healthy ? "gh-ok" : "gh-err");
+        hv.innerHTML = '<i class="gh-sdot ' + (healthy ? "ok" : "err") + '"></i>' +
+            (healthy ? "运行正常" : "运行异常");
+
+        var issues = d.health_issues || [];
+        $("gh-health-sub").textContent = healthy
+            ? "进程 · 转发 · DNS · 证书"
+            : (issues[0] || "服务未就绪");
+        $("gh-health").title = healthy
+            ? "进程、转发规则、DNS 与证书均正常，点击查看日志"
+            : (issues.length ? "异常: " + issues.join("、") + "，点击查看日志" : "点击查看日志");
 
         if (d.running) {
             renderHosts(st.hosts || []);
