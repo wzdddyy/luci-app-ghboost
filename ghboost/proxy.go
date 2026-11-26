@@ -1952,10 +1952,7 @@ func (p *Proxy) statsLoop() {
 		case <-p.stopCh:
 			return
 		case <-t.C:
-			ok, fail, total := connStats.recent(time.Now())
-			if ok > 0 || fail > 0 {
-				logInfo("近 60 秒: 成功 %d 条, 失败 %d 条, 累计 %d 条", ok, fail, total)
-			}
+			connStats.recent(time.Now())
 
 			p.statMu.Lock()
 			for k, st := range p.stats {
