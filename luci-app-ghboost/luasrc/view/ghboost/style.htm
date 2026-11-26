@@ -150,6 +150,36 @@
     font-variant-numeric: tabular-nums;
 }
 .gh-metric .v small { font-size: 12px; font-weight: 400; opacity: .6; }
+.gh-metric .s {
+    margin-top: 3px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    opacity: .68;
+}
+.gh-metric .s > span { display: inline-flex; align-items: center; gap: 4px; }
+.gh-metric .v .gh-sdot { margin-right: 6px; }
+.gh-sdot {
+    flex: none;
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    vertical-align: middle;
+    background: rgba(128,128,128,0.55);
+}
+.gh-sdot.ok { background: var(--gh-ok); }
+.gh-sdot.err { background: var(--gh-err); }
+.gh-metric-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    transition: background .12s ease, border-color .12s ease;
+}
+.gh-metric-link:hover { background: var(--gh-surface-2); border-color: rgba(128,128,128,0.35); }
+.gh-metric-link:focus-visible { outline: 2px solid var(--gh-brand); outline-offset: 2px; }
 
 .gh-kv {
     display: grid;
