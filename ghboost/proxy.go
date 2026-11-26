@@ -1934,7 +1934,7 @@ func boolToInt(b bool) int {
 
 const (
 	statBucketDur = time.Second
-	statBuckets   = 3
+	statBuckets   = 10
 )
 
 type statWindow struct {
