@@ -26,19 +26,19 @@
     </div>
 
     <div class="gh-metrics">
-        <a class="gh-metric gh-metric-link" id="gh-health"
-           href="<%=luci.dispatcher.build_url()%>/admin/services/ghboost/log">
+        <div class="gh-metric" id="gh-health">
             <div class="k">健康检查</div>
             <div class="v" id="gh-health-v">检测中…</div>
-            <div class="s" id="gh-health-sub">--</div>
-        </a>
+            <a class="s" id="gh-health-sub"
+               href="<%=luci.dispatcher.build_url()%>/admin/services/ghboost/log">--</a>
+        </div>
         <div class="gh-metric">
             <div class="k">活跃连接</div>
             <div class="v" id="gh-active">--</div>
             <div class="s" id="gh-clients">-- 个客户端</div>
         </div>
         <div class="gh-metric">
-            <div class="k">实时解析</div>
+            <div class="k">实时转发</div>
             <div class="v"><span class="gh-ok" id="gh-ok">--</span> <small>/</small> <span class="gh-err" id="gh-fail">--</span></div>
             <div class="s">
                 <span><i class="gh-sdot ok"></i>成功</span>
@@ -256,8 +256,8 @@
             ? st.active_conns + ' <small>/ ' + (maxConns != null && maxConns !== "" ? maxConns : "--") + "</small>"
             : "--";
         $("gh-clients").textContent = (d.running && st.clients != null ? st.clients : 0) + " 个客户端";
-        $("gh-ok").textContent = d.running ? (st.ok_60s != null ? st.ok_60s : "--") : "--";
-        $("gh-fail").textContent = d.running ? (st.fail_60s != null ? st.fail_60s : "--") : "--";
+        $("gh-ok").textContent = d.running ? (st.ok != null ? st.ok : "--") : "--";
+        $("gh-fail").textContent = d.running ? (st.fail != null ? st.fail : "--") : "--";
 
         var best = 0, bestHost = "";
         (st.hosts || []).forEach(function(h) {
@@ -267,19 +267,23 @@
         $("gh-best").innerHTML = best ? best + " <small>ms</small>" : "--";
         $("gh-best-host").textContent = bestHost || "暂无数据";
 
-        var healthy = d.health === true;
+        var running = !!d.running;
+        var warming = running && d.warming === true;
+        var healthy = running && !warming && d.health === true;
         var hv = $("gh-health-v");
-        hv.className = "v " + (healthy ? "gh-ok" : "gh-err");
-        hv.innerHTML = '<i class="gh-sdot ' + (healthy ? "ok" : "err") + '"></i>' +
-            (healthy ? "运行正常" : "运行异常");
+        hv.className = "v" + (healthy ? " gh-ok" : (running && !warming ? " gh-err" : ""));
+        hv.textContent = !running ? "未转发" : (warming ? "预热中" : (healthy ? "转发正常" : "转发异常"));
 
         var issues = d.health_issues || [];
-        $("gh-health-sub").textContent = healthy
-            ? "进程 · 转发 · DNS · 证书"
-            : (issues[0] || "服务未就绪");
+        var healthSub = $("gh-health-sub");
+        healthSub.textContent = !running ? "服务未启动"
+            : (warming ? "正在预热转发域名，请稍候"
+            : (healthy ? "查看日志" : (issues[0] || "服务未就绪")));
+        healthSub.className = "s" + (running && !warming && !healthy ? " gh-err" : "");
         $("gh-health").title = healthy
-            ? "进程、转发规则、DNS 与证书均正常，点击查看日志"
-            : (issues.length ? "异常: " + issues.join("、") + "，点击查看日志" : "点击查看日志");
+            ? "进程、转发规则、DNS 与证书均正常"
+            : (warming ? "正在预热转发规则"
+            : (issues.length ? "异常: " + issues.join("、") : "服务未启动，点击查看日志"));
 
         if (d.running) {
             renderHosts(st.hosts || []);
