@@ -168,6 +168,8 @@ type Proxy struct {
 	statMu sync.Mutex
 	stats  map[string]*ipStat
 
+	warming atomic.Bool
+
 	probeMu sync.Mutex
 	probeAt map[string]time.Time
 
@@ -201,7 +203,7 @@ func NewProxy(cfg ProxyOptions, res *resolver, table *domainTable, certs *CertSt
 	if cfg.MaxConns <= 0 {
 		cfg.MaxConns = 128
 	}
-	return &Proxy{
+	p := &Proxy{
 		cfg:      cfg,
 		resolver: res,
 		certs:    certs,
@@ -215,6 +217,8 @@ func NewProxy(cfg ProxyOptions, res *resolver, table *domainTable, certs *CertSt
 		dynamic:  make(map[string][]string),
 		expandAt: make(map[string]time.Time),
 	}
+	p.warming.Store(true)
+	return p
 }
 
 func (p *Proxy) Start() error {
@@ -1703,6 +1707,7 @@ func (p *Proxy) warmupLoop() {
 }
 
 func (p *Proxy) warmupOnce() {
+	defer p.warming.Store(false)
 	doms := p.domainList()
 	if len(doms) == 0 {
 		return
@@ -1928,8 +1933,8 @@ func boolToInt(b bool) int {
 }
 
 const (
-	statBucketDur = 5 * time.Second
-	statBuckets   = 12 
+	statBucketDur = time.Second
+	statBuckets   = 3
 )
 
 type statWindow struct {
@@ -1999,8 +2004,6 @@ func (p *Proxy) statsLoop() {
 		case <-p.stopCh:
 			return
 		case <-t.C:
-			connStats.recent(time.Now())
-
 			p.statMu.Lock()
 			for k, st := range p.stats {
 				last := st.rttAt
