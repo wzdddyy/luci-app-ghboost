@@ -275,8 +275,8 @@
         var healthy = running && !initializing && d.health === true;
         var hv = $("gh-health-v");
         hv.className = "v" + (healthy ? " gh-ok" : (running && !initializing ? " gh-err" : ""));
-        hv.textContent = !running ? "未转发"
-            : (starting ? "初始化中" : (warming ? "预热中" : (healthy ? "转发正常" : "转发异常")));
+        hv.textContent = !running ? "未运行"
+            : (starting ? "初始化中" : (warming ? "预热中" : (healthy ? "正常" : "异常")));
 
         var issues = d.health_issues || [];
         var healthSub = $("gh-health-sub");
