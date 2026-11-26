@@ -22,6 +22,7 @@ type StatusSnapshot struct {
 	Domains   int       `json:"domains"`
 	MaxConns  int       `json:"max_conns"`
 	Active    int       `json:"active_conns"`
+	Clients   int       `json:"clients"`
 	OK60   int64 `json:"ok_60s"`
 	Fail60 int64 `json:"fail_60s"`
 	Total  int64 `json:"total"`
@@ -63,6 +64,7 @@ func (p *Proxy) snapshot() StatusSnapshot {
 		Domains:   p.domainCount(),
 		MaxConns:  p.cfg.MaxConns,
 		Active:    len(p.connSem),
+		Clients:   p.clientCount(),
 		OK60:      ok60,
 		Fail60:    fail60,
 		Total:     total,
