@@ -172,14 +172,10 @@
 }
 .gh-sdot.ok { background: var(--gh-ok); }
 .gh-sdot.err { background: var(--gh-err); }
-.gh-metric-link {
-    display: block;
-    color: inherit;
-    text-decoration: none;
-    transition: background .12s ease, border-color .12s ease;
-}
-.gh-metric-link:hover { background: var(--gh-surface-2); border-color: rgba(128,128,128,0.35); }
-.gh-metric-link:focus-visible { outline: 2px solid var(--gh-brand); outline-offset: 2px; }
+.gh-metric a.s { color: inherit; text-decoration: none; }
+.gh-metric a.s:hover { text-decoration: underline; text-underline-offset: 2px; }
+.gh-metric a.s.gh-err { color: var(--gh-err); opacity: .9; }
+.gh-metric a.s:focus-visible { outline: 2px solid var(--gh-brand); outline-offset: 2px; }
 
 .gh-kv {
     display: grid;
