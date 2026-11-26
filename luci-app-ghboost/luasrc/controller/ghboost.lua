@@ -253,6 +253,36 @@ function act_status()
 		end
 	end
 
+	local issues = {}
+	if e.binary ~= "present" then
+		issues[#issues + 1] = "核心文件缺失"
+	end
+	if not e.tproxy then
+		issues[#issues + 1] = "转发规则未生效"
+	end
+	if e.dnsmasq ~= "present" then
+		issues[#issues + 1] = "dnsmasq 规则缺失"
+	end
+	if not e.ca_file then
+		issues[#issues + 1] = "CA 证书缺失"
+	end
+	if not e.running then
+		issues[#issues + 1] = "进程未运行"
+	else
+		if e.dnsmap == "none" then
+			issues[#issues + 1] = "缺少 github.com 映射"
+		elseif e.dnsmap == "fail" then
+			issues[#issues + 1] = "域名解析未生效"
+		end
+		if not e.stats then
+			issues[#issues + 1] = "状态数据缺失"
+		elseif e.stats_age and e.stats_age > 10 then
+			issues[#issues + 1] = "状态数据未更新"
+		end
+	end
+	e.health_issues = issues
+	e.health = (#issues == 0)
+
 	e.version_core = nil
 	if e.binary ~= "missing" then
 		if e.stats and type(e.stats.version) == "string" and e.stats.version ~= "" and e.stats.version ~= "dev" then
