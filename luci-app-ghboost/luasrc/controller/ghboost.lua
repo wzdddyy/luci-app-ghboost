@@ -269,17 +269,13 @@ function act_status()
 	if not e.running then
 		issues[#issues + 1] = "进程未运行"
 	else
-		if e.dnsmap == "none" then
-			issues[#issues + 1] = "缺少 github.com 映射"
-		elseif e.dnsmap == "fail" then
-			issues[#issues + 1] = "域名解析未生效"
-		end
 		if not e.stats then
 			issues[#issues + 1] = "状态数据缺失"
 		elseif e.stats_age and e.stats_age > 10 then
 			issues[#issues + 1] = "状态数据未更新"
 		end
 	end
+	e.warming = (e.stats and e.stats.warming == true) or false
 	e.health_issues = issues
 	e.health = (#issues == 0)
 

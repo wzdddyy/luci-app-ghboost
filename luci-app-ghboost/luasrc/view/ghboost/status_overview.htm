@@ -98,7 +98,7 @@
         }
         var st = d.stats || null;
         if (!st || st.uptime_sec === 0) {
-            return { title: "启动中", sub: "正在初始化转发与预热", cls: "warn" };
+            return { title: "启动中", sub: "正在启动服务", cls: "warn" };
         }
         var rt = d.runtime || {};
         var sub = "监听 :" + (rt.port || String(st.listen || "").replace(/^:/, "") || "--");
@@ -268,21 +268,26 @@
         $("gh-best-host").textContent = bestHost || "暂无数据";
 
         var running = !!d.running;
-        var warming = running && d.warming === true;
-        var healthy = running && !warming && d.health === true;
+        var stats = d.stats || null;
+        var starting = running && (!stats || stats.uptime_sec === 0);
+        var warming = running && !starting && d.warming === true;
+        var initializing = starting || warming;
+        var healthy = running && !initializing && d.health === true;
         var hv = $("gh-health-v");
-        hv.className = "v" + (healthy ? " gh-ok" : (running && !warming ? " gh-err" : ""));
-        hv.textContent = !running ? "未转发" : (warming ? "预热中" : (healthy ? "转发正常" : "转发异常"));
+        hv.className = "v" + (healthy ? " gh-ok" : (running && !initializing ? " gh-err" : ""));
+        hv.textContent = !running ? "未转发"
+            : (starting ? "初始化中" : (warming ? "预热中" : (healthy ? "转发正常" : "转发异常")));
 
         var issues = d.health_issues || [];
         var healthSub = $("gh-health-sub");
         healthSub.textContent = !running ? "服务未启动"
+            : (starting ? "正在初始化转发与预热"
             : (warming ? "正在预热转发域名，请稍候"
-            : (healthy ? "查看日志" : (issues[0] || "服务未就绪")));
-        healthSub.className = "s" + (running && !warming && !healthy ? " gh-err" : "");
+            : (healthy ? "查看日志" : (issues[0] || "服务未就绪"))));
+        healthSub.className = "s" + (running && !initializing && !healthy ? " gh-err" : "");
         $("gh-health").title = healthy
-            ? "进程、转发规则、DNS 与证书均正常"
-            : (warming ? "正在预热转发规则"
+            ? "进程、转发规则与证书均正常"
+            : (initializing ? "正在初始化转发与预热"
             : (issues.length ? "异常: " + issues.join("、") : "服务未启动，点击查看日志"));
 
         if (d.running) {
